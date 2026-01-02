@@ -10,8 +10,12 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ===== Configuração de Serviços =====
 
-var baseConnectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+// Substituir variáveis de ambiente no formato ${VAR} nas configurações
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("Connection string 'DefaultConnection' não encontrada.");
+
+// Substituir variáveis de ambiente no formato ${VAR}
+var baseConnectionString = ReplaceEnvironmentVariables(connectionString);
 
 var rootCertSetting = builder.Configuration["Database:RootCertificatePath"];
 var npgBuilder = new NpgsqlConnectionStringBuilder(baseConnectionString)
@@ -48,8 +52,8 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 
 // ChirpStack Client (gRPC)
 var chirpStackConfig = builder.Configuration.GetSection("ChirpStack");
-var chirpStackUrl = chirpStackConfig["ApiUrl"] ?? "http://srv01.automais.io:8080";
-var chirpStackToken = chirpStackConfig["ApiToken"] ?? "";
+var chirpStackUrl = ReplaceEnvironmentVariables(chirpStackConfig["ApiUrl"] ?? "http://srv01.automais.io:8080");
+var chirpStackToken = ReplaceEnvironmentVariables(chirpStackConfig["ApiToken"] ?? "");
 
 Console.WriteLine($"🔗 ChirpStack URL (gRPC): {chirpStackUrl}");
 Console.WriteLine($"🔑 Token configurado: {(!string.IsNullOrEmpty(chirpStackToken) ? "Sim ✅" : "Não ⚠️")}");
@@ -145,4 +149,33 @@ Console.WriteLine($"💾 Modo: Postgres (DigitalOcean)");
 Console.WriteLine($"📡 ChirpStack: {chirpStackUrl}\n");
 
 app.Run();
+
+// ===== Helper Functions =====
+
+/// <summary>
+/// Substitui variáveis de ambiente no formato ${VAR} pelos valores reais
+/// </summary>
+static string ReplaceEnvironmentVariables(string input)
+{
+    if (string.IsNullOrWhiteSpace(input))
+        return input;
+
+    var result = input;
+    var startIndex = 0;
+
+    while ((startIndex = result.IndexOf("${", startIndex)) != -1)
+    {
+        var endIndex = result.IndexOf("}", startIndex);
+        if (endIndex == -1)
+            break;
+
+        var varName = result.Substring(startIndex + 2, endIndex - startIndex - 2);
+        var envValue = Environment.GetEnvironmentVariable(varName) ?? string.Empty;
+        
+        result = result.Substring(0, startIndex) + envValue + result.Substring(endIndex + 1);
+        startIndex += envValue.Length;
+    }
+
+    return result;
+}
 

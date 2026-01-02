@@ -77,36 +77,64 @@ jobs:
         use_insecure_cipher: false
         debug: true
         script: |
+          echo "=== Iniciando deploy ==="
+          
           # Verificar se arquivo de serviço foi copiado
-          if [ ! -f /tmp/automais-api.service ]; then
-            echo "ERRO: Arquivo automais-api.service não encontrado em /tmp/"
+          echo "Verificando arquivo de serviço em /tmp/..."
+          if ls -la /tmp/automais-api.service 2>/dev/null; then
+            echo "✓ Arquivo encontrado em /tmp/"
+          else
+            echo "✗ Arquivo NÃO encontrado em /tmp/"
+            echo "Conteúdo de /tmp/:"
+            ls -la /tmp/ | head -20
+            echo "ERRO: Arquivo automais-api.service não foi copiado corretamente"
             exit 1
           fi
           
-          # Copiar arquivo de serviço para systemd
+          echo "Copiando arquivo para /etc/systemd/system/..."
           cp /tmp/automais-api.service /etc/systemd/system/automais-api.service
           chmod 644 /etc/systemd/system/automais-api.service
           
+          echo "Verificando se arquivo foi copiado corretamente..."
+          if [ -f /etc/systemd/system/automais-api.service ]; then
+            echo "✓ Arquivo copiado com sucesso"
+            ls -la /etc/systemd/system/automais-api.service
+          else
+            echo "✗ ERRO: Falha ao copiar arquivo"
+            exit 1
+          fi
+          
           # Recarregar systemd
+          echo "Recarregando systemd..."
           systemctl daemon-reload
           
           # Ir para diretório da aplicação
           cd /root/automais.io/server.io
           
-          # Extrair arquivos
+          echo "Extraindo arquivos da aplicação..."
           tar -xzf deploy.tar.gz
           rm deploy.tar.gz
           
           # Criar diretório de backups se não existir
           mkdir -p /backups/routers
           
-          # Habilitar serviço (se ainda não estiver habilitado)
-          systemctl enable automais-api.service || true
+          echo "Habilitando serviço..."
+          systemctl enable automais-api.service || echo "Aviso: Erro ao habilitar (pode já estar habilitado)"
           
-          # Reiniciar serviço
+          echo "Verificando se serviço está habilitado..."
+          if systemctl is-enabled automais-api.service >/dev/null 2>&1; then
+            echo "✓ Serviço está habilitado"
+          else
+            echo "✗ Serviço não está habilitado"
+          fi
+          
+          echo "Reiniciando serviço..."
           systemctl restart automais-api.service
           
           # Aguardar um pouco e verificar status
-          sleep 2
-          systemctl status automais-api.service
+          sleep 3
+          echo "Status do serviço:"
+          systemctl status automais-api.service --no-pager || true
+          
+          echo "=== Deploy concluído ==="
 

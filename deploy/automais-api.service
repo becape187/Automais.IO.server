@@ -1,0 +1,35 @@
+[Unit]
+Description=Automais.io API Service
+After=network.target
+
+[Service]
+Type=notify
+User=root
+WorkingDirectory=/root/automais.io/server.io
+ExecStart=/usr/bin/dotnet /root/automais.io/server.io/Automais.Api.dll
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+SyslogIdentifier=automais-api
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=ASPNETCORE_URLS=http://0.0.0.0:5000
+
+# Variáveis de ambiente do banco de dados (substituir ${VAR} no appsettings.json)
+Environment=DB_HOST=db-automais-io-do-user-10042663-0.g.db.ondigitalocean.com
+Environment=DB_PORT=25060
+Environment=DB_NAME=defaultdb
+Environment=DB_USER=doadmin
+Environment=DB_PASSWORD=AVNS_eqdblzqmc_dHBuuGKQ2
+
+# Variáveis de ambiente do ChirpStack
+Environment=CHIRPSTACK_API_URL=http://srv01.automais.io:8080
+Environment=CHIRPSTACK_API_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJjaGlycHN0YWNrIiwiaXNzIjoiY2hpcnBzdGFjayIsInN1YiI6IjQ3Y2QxMmVjLTVhZmUtNGZhNy04MThjLTcwZGI4N2YyMjkzZiIsInR5cCI6ImtleSJ9.ECjuFEadJG9sEXsordzzvMwnJr5F3RYBxn3eUbbONPs
+
+# Variáveis de ambiente do EMQX
+Environment=EMQX_BROKER_URL=srv01.automais.io
+Environment=EMQX_USERNAME=
+Environment=EMQX_PASSWORD=
+
+[Install]
+WantedBy=multi-user.target
+

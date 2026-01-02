@@ -44,6 +44,10 @@ jobs:
         username: ${{ secrets.SERVER_USER }}
         password: ${{ secrets.SERVER_PASSWORD }}
         port: ${{ secrets.SERVER_PORT || 22 }}
+        timeout: 300s
+        command_timeout: 300s
+        use_insecure_cipher: false
+        debug: true
         source: "deploy.tar.gz"
         target: "/root/automais.io/server.io/"
 
@@ -54,6 +58,10 @@ jobs:
         username: ${{ secrets.SERVER_USER }}
         password: ${{ secrets.SERVER_PASSWORD }}
         port: ${{ secrets.SERVER_PORT || 22 }}
+        timeout: 300s
+        command_timeout: 300s
+        use_insecure_cipher: false
+        debug: true
         source: "deploy/automais-api.service"
         target: "/tmp/"
 
@@ -64,6 +72,10 @@ jobs:
         username: ${{ secrets.SERVER_USER }}
         password: ${{ secrets.SERVER_PASSWORD }}
         port: ${{ secrets.SERVER_PORT || 22 }}
+        timeout: 300s
+        command_timeout: 300s
+        use_insecure_cipher: false
+        debug: true
         script: |
           cd /root/automais.io/server.io
           

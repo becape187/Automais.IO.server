@@ -77,6 +77,20 @@ jobs:
         use_insecure_cipher: false
         debug: true
         script: |
+          # Verificar se arquivo de serviço foi copiado
+          if [ ! -f /tmp/automais-api.service ]; then
+            echo "ERRO: Arquivo automais-api.service não encontrado em /tmp/"
+            exit 1
+          fi
+          
+          # Copiar arquivo de serviço para systemd
+          cp /tmp/automais-api.service /etc/systemd/system/automais-api.service
+          chmod 644 /etc/systemd/system/automais-api.service
+          
+          # Recarregar systemd
+          systemctl daemon-reload
+          
+          # Ir para diretório da aplicação
           cd /root/automais.io/server.io
           
           # Extrair arquivos
@@ -86,18 +100,13 @@ jobs:
           # Criar diretório de backups se não existir
           mkdir -p /backups/routers
           
-          # Instalar/copiar arquivo de serviço systemd (se ainda não existir)
-          if [ ! -f /etc/systemd/system/automais-api.service ]; then
-            cp /tmp/automais-api.service /etc/systemd/system/automais-api.service
-            systemctl daemon-reload
-            systemctl enable automais-api.service
-          else
-            # Atualizar arquivo de serviço se houver mudanças
-            cp /tmp/automais-api.service /etc/systemd/system/automais-api.service
-            systemctl daemon-reload
-          fi
+          # Habilitar serviço (se ainda não estiver habilitado)
+          systemctl enable automais-api.service || true
           
           # Reiniciar serviço
           systemctl restart automais-api.service
+          
+          # Aguardar um pouco e verificar status
+          sleep 2
           systemctl status automais-api.service
 

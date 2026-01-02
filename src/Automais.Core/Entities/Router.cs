@@ -1,0 +1,93 @@
+namespace Automais.Core.Entities;
+
+/// <summary>
+/// Representa um Router Mikrotik gerenciado pela plataforma.
+/// </summary>
+public class Router
+{
+    public Guid Id { get; set; }
+    
+    /// <summary>
+    /// ID do tenant proprietário
+    /// </summary>
+    public Guid TenantId { get; set; }
+    
+    /// <summary>
+    /// Nome descritivo do router
+    /// </summary>
+    public string Name { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// Número de série do router
+    /// </summary>
+    public string? SerialNumber { get; set; }
+    
+    /// <summary>
+    /// Modelo do router (ex: RB750, RB4011, etc)
+    /// </summary>
+    public string? Model { get; set; }
+    
+    /// <summary>
+    /// Versão do firmware RouterOS
+    /// </summary>
+    public string? FirmwareVersion { get; set; }
+    
+    /// <summary>
+    /// URL da API RouterOS (ex: "192.168.1.1:8728" - via WireGuard)
+    /// </summary>
+    public string? RouterOsApiUrl { get; set; }
+    
+    /// <summary>
+    /// Usuário da API RouterOS
+    /// </summary>
+    public string? RouterOsApiUsername { get; set; }
+    
+    /// <summary>
+    /// Senha da API RouterOS (criptografada no banco)
+    /// </summary>
+    public string? RouterOsApiPassword { get; set; }
+    
+    /// <summary>
+    /// ID da rede VPN WireGuard associada
+    /// </summary>
+    public Guid? VpnNetworkId { get; set; }
+    
+    /// <summary>
+    /// Status atual do router
+    /// </summary>
+    public RouterStatus Status { get; set; } = RouterStatus.Offline;
+    
+    /// <summary>
+    /// Última vez que o router foi visto online
+    /// </summary>
+    public DateTime? LastSeenAt { get; set; }
+    
+    /// <summary>
+    /// Informações de hardware (JSON): CPU, RAM, temperatura, etc
+    /// </summary>
+    public string? HardwareInfo { get; set; }
+    
+    /// <summary>
+    /// Descrição opcional
+    /// </summary>
+    public string? Description { get; set; }
+    
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+    
+    // Navigation Properties
+    public Tenant Tenant { get; set; } = null!;
+    public VpnNetwork? VpnNetwork { get; set; }
+    public ICollection<RouterWireGuardPeer> WireGuardPeers { get; set; } = new List<RouterWireGuardPeer>();
+    public ICollection<RouterConfigLog> ConfigLogs { get; set; } = new List<RouterConfigLog>();
+    public ICollection<RouterBackup> Backups { get; set; } = new List<RouterBackup>();
+}
+
+public enum RouterStatus
+{
+    Online = 1,        // Router online e operacional
+    Offline = 2,        // Router offline
+    Maintenance = 3,    // Router em manutenção
+    Error = 4           // Erro de conexão
+}
+

@@ -1,0 +1,73 @@
+namespace Automais.Core.Entities;
+
+/// <summary>
+/// Representa um peer WireGuard de um Router.
+/// Cada router pode ter um ou mais peers em diferentes redes VPN.
+/// </summary>
+public class RouterWireGuardPeer
+{
+    public Guid Id { get; set; }
+    
+    /// <summary>
+    /// ID do router
+    /// </summary>
+    public Guid RouterId { get; set; }
+    
+    /// <summary>
+    /// ID da rede VPN
+    /// </summary>
+    public Guid VpnNetworkId { get; set; }
+    
+    /// <summary>
+    /// Chave pública WireGuard
+    /// </summary>
+    public string PublicKey { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// Chave privada WireGuard (criptografada no banco)
+    /// </summary>
+    public string PrivateKey { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// IPs permitidos (ex: "10.100.1.50/32")
+    /// </summary>
+    public string AllowedIps { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// Endpoint do portal (IP público)
+    /// </summary>
+    public string? Endpoint { get; set; }
+    
+    /// <summary>
+    /// Porta de escuta
+    /// </summary>
+    public int? ListenPort { get; set; }
+    
+    /// <summary>
+    /// Último handshake WireGuard
+    /// </summary>
+    public DateTime? LastHandshake { get; set; }
+    
+    /// <summary>
+    /// Bytes recebidos
+    /// </summary>
+    public long? BytesReceived { get; set; }
+    
+    /// <summary>
+    /// Bytes enviados
+    /// </summary>
+    public long? BytesSent { get; set; }
+    
+    /// <summary>
+    /// Peer habilitado
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
+    
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+    
+    // Navigation Properties
+    public Router Router { get; set; } = null!;
+    public VpnNetwork VpnNetwork { get; set; } = null!;
+}
+

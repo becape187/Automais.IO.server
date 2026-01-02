@@ -1,0 +1,37 @@
+namespace Automais.Core.DTOs;
+
+public class VpnNetworkDto
+{
+    public Guid Id { get; set; }
+    public Guid TenantId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Slug { get; set; } = string.Empty;
+    public string Cidr { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IsDefault { get; set; }
+    public string? DnsServers { get; set; }
+    public int UserCount { get; set; }
+    public int DeviceCount { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class CreateVpnNetworkDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string Slug { get; set; } = string.Empty;
+    public string Cidr { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IsDefault { get; set; }
+    public string? DnsServers { get; set; }
+}
+
+public class UpdateVpnNetworkDto
+{
+    public string? Name { get; set; }
+    public string? Description { get; set; }
+    public bool? IsDefault { get; set; }
+    public string? DnsServers { get; set; }
+}
+
+

@@ -63,7 +63,7 @@ jobs:
         use_insecure_cipher: false
         debug: true
         source: "deploy/automais-api.service"
-        target: "/tmp/"
+        target: "/root/automais.io/server.io/"
 
     - name: Deploy on server
       uses: appleboy/ssh-action@master
@@ -79,20 +79,23 @@ jobs:
         script: |
           echo "=== Iniciando deploy ==="
           
+          # Ir para diretório da aplicação
+          cd /root/automais.io/server.io
+          
           # Verificar se arquivo de serviço foi copiado
-          echo "Verificando arquivo de serviço em /tmp/..."
-          if ls -la /tmp/automais-api.service 2>/dev/null; then
-            echo "✓ Arquivo encontrado em /tmp/"
+          echo "Verificando arquivo de serviço no diretório da aplicação..."
+          if ls -la automais-api.service 2>/dev/null; then
+            echo "✓ Arquivo encontrado"
           else
-            echo "✗ Arquivo NÃO encontrado em /tmp/"
-            echo "Conteúdo de /tmp/:"
-            ls -la /tmp/ | head -20
+            echo "✗ Arquivo NÃO encontrado"
+            echo "Conteúdo do diretório:"
+            ls -la | head -20
             echo "ERRO: Arquivo automais-api.service não foi copiado corretamente"
             exit 1
           fi
           
           echo "Copiando arquivo para /etc/systemd/system/..."
-          cp /tmp/automais-api.service /etc/systemd/system/automais-api.service
+          cp automais-api.service /etc/systemd/system/automais-api.service
           chmod 644 /etc/systemd/system/automais-api.service
           
           echo "Verificando se arquivo foi copiado corretamente..."

@@ -1,4 +1,5 @@
 using Automais.Core.Interfaces;
+using Microsoft.Extensions.Logging;
 using System.Net.Sockets;
 using System.Text;
 

@@ -1,7 +1,6 @@
 using Automais.Core.DTOs;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
-using Microsoft.Extensions.Configuration;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -16,20 +15,20 @@ public class RouterBackupService : IRouterBackupService
     private readonly IRouterRepository _routerRepository;
     private readonly IRouterOsClient _routerOsClient;
     private readonly ITenantUserRepository? _tenantUserRepository;
-    private readonly IConfiguration? _configuration;
+    private readonly string _backupStoragePath;
 
     public RouterBackupService(
         IRouterBackupRepository backupRepository,
         IRouterRepository routerRepository,
         IRouterOsClient routerOsClient,
         ITenantUserRepository? tenantUserRepository = null,
-        IConfiguration? configuration = null)
+        string backupStoragePath = "/backups/routers")
     {
         _backupRepository = backupRepository;
         _routerRepository = routerRepository;
         _routerOsClient = routerOsClient;
         _tenantUserRepository = tenantUserRepository;
-        _configuration = configuration;
+        _backupStoragePath = backupStoragePath;
     }
 
     public async Task<IEnumerable<RouterBackupDto>> GetByRouterIdAsync(Guid routerId, CancellationToken cancellationToken = default)
@@ -94,11 +93,8 @@ public class RouterBackupService : IRouterBackupService
         var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss");
         var fileName = $"backup_{timestamp}.rsc";
 
-        // Obter caminho de storage do appsettings ou usar padrão
-        var backupStoragePath = _configuration?["Backup:StoragePath"] ?? "/backups/routers";
-        
         // Criar diretório se não existir
-        var tenantBackupPath = Path.Combine(backupStoragePath, router.TenantId.ToString());
+        var tenantBackupPath = Path.Combine(_backupStoragePath, router.TenantId.ToString());
         var routerBackupPath = Path.Combine(tenantBackupPath, routerId.ToString());
         Directory.CreateDirectory(routerBackupPath);
 

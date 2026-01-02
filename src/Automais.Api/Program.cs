@@ -3,7 +3,9 @@ using Automais.Core.Services;
 using Automais.Infrastructure.ChirpStack;
 using Automais.Infrastructure.Data;
 using Automais.Infrastructure.Repositories;
+using Automais.Infrastructure.RouterOS;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -85,10 +87,24 @@ builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IVpnNetworkService, VpnNetworkService>();
 builder.Services.AddScoped<IRouterService, RouterService>();
 builder.Services.AddScoped<IRouterWireGuardService, RouterWireGuardService>();
-builder.Services.AddScoped<IRouterBackupService, RouterBackupService>();
+
+// RouterBackupService com caminho de storage configurável
+var backupStoragePath = builder.Configuration["Backup:StoragePath"] ?? "/backups/routers";
+builder.Services.AddScoped<IRouterBackupService>(sp =>
+{
+    var backupRepo = sp.GetRequiredService<IRouterBackupRepository>();
+    var routerRepo = sp.GetRequiredService<IRouterRepository>();
+    var routerOsClient = sp.GetRequiredService<IRouterOsClient>();
+    var tenantUserRepo = sp.GetService<ITenantUserRepository>();
+    return new RouterBackupService(backupRepo, routerRepo, routerOsClient, tenantUserRepo, backupStoragePath);
+});
 
 // External Clients
-builder.Services.AddSingleton<IRouterOsClient, RouterOsClient>();
+builder.Services.AddSingleton<IRouterOsClient>(sp =>
+{
+    var logger = sp.GetService<ILogger<RouterOsClient>>();
+    return new RouterOsClient(logger);
+});
 
 // Controllers
 builder.Services.AddControllers();

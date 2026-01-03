@@ -25,8 +25,23 @@ public class RouterService : IRouterService
 
     public async Task<IEnumerable<RouterDto>> GetByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default)
     {
-        var routers = await _routerRepository.GetByTenantIdAsync(tenantId, cancellationToken);
-        return routers.Select(MapToDto);
+        try
+        {
+            // Verificar se o tenant existe (opcional, mas ajuda a dar feedback melhor)
+            var tenant = await _tenantRepository.GetByIdAsync(tenantId, cancellationToken);
+            if (tenant == null)
+            {
+                // Retorna lista vazia ao invés de lançar exceção se o tenant não existir
+                return Enumerable.Empty<RouterDto>();
+            }
+
+            var routers = await _routerRepository.GetByTenantIdAsync(tenantId, cancellationToken);
+            return routers.Select(MapToDto);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Erro ao buscar routers do tenant {tenantId}: {ex.Message}", ex);
+        }
     }
 
     public async Task<RouterDto?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)

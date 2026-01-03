@@ -23,20 +23,36 @@ public class RoutersController : ControllerBase
     [HttpGet("tenants/{tenantId:guid}/routers")]
     public async Task<ActionResult<IEnumerable<RouterDto>>> GetByTenant(Guid tenantId, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Listando routers do tenant {TenantId}", tenantId);
-        var routers = await _routerService.GetByTenantIdAsync(tenantId, cancellationToken);
-        return Ok(routers);
+        try
+        {
+            _logger.LogInformation("Listando routers do tenant {TenantId}", tenantId);
+            var routers = await _routerService.GetByTenantIdAsync(tenantId, cancellationToken);
+            return Ok(routers);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao listar routers do tenant {TenantId}", tenantId);
+            return StatusCode(500, new { message = "Erro interno do servidor ao listar routers", error = ex.Message });
+        }
     }
 
     [HttpGet("routers/{id:guid}")]
     public async Task<ActionResult<RouterDto>> GetById(Guid id, CancellationToken cancellationToken)
     {
-        var router = await _routerService.GetByIdAsync(id, cancellationToken);
-        if (router == null)
+        try
         {
-            return NotFound(new { message = $"Router com ID {id} não encontrado" });
+            var router = await _routerService.GetByIdAsync(id, cancellationToken);
+            if (router == null)
+            {
+                return NotFound(new { message = $"Router com ID {id} não encontrado" });
+            }
+            return Ok(router);
         }
-        return Ok(router);
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao obter router {RouterId}", id);
+            return StatusCode(500, new { message = "Erro interno do servidor ao obter router", error = ex.Message });
+        }
     }
 
     [HttpPost("tenants/{tenantId:guid}/routers")]
@@ -84,8 +100,21 @@ public class RoutersController : ControllerBase
     [HttpDelete("routers/{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
-        await _routerService.DeleteAsync(id, cancellationToken);
-        return NoContent();
+        try
+        {
+            await _routerService.DeleteAsync(id, cancellationToken);
+            return NoContent();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Router não encontrado para exclusão");
+            return NotFound(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao deletar router {RouterId}", id);
+            return StatusCode(500, new { message = "Erro interno do servidor ao deletar router", error = ex.Message });
+        }
     }
 
     [HttpPost("routers/{id:guid}/test-connection")]

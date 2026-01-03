@@ -19,12 +19,47 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 // Substituir variáveis de ambiente no formato ${VAR}
 var baseConnectionString = ReplaceEnvironmentVariables(connectionString);
 
-var rootCertSetting = builder.Configuration["Database:RootCertificatePath"];
-var npgBuilder = new NpgsqlConnectionStringBuilder(baseConnectionString)
+// Validar se a connection string tem host
+if (string.IsNullOrWhiteSpace(baseConnectionString))
 {
-    SslMode = SslMode.Require,
-    TrustServerCertificate = true
-};
+    throw new InvalidOperationException("Connection string está vazia após substituição de variáveis de ambiente.");
+}
+
+// Verificar se a connection string tem Host
+if (!baseConnectionString.Contains("Host=", StringComparison.OrdinalIgnoreCase) && 
+    !baseConnectionString.Contains("Server=", StringComparison.OrdinalIgnoreCase))
+{
+    throw new InvalidOperationException("Connection string não contém Host ou Server. Verifique a configuração.");
+}
+
+var rootCertSetting = builder.Configuration["Database:RootCertificatePath"];
+
+// Validar e construir connection string
+NpgsqlConnectionStringBuilder npgBuilder;
+try
+{
+    npgBuilder = new NpgsqlConnectionStringBuilder(baseConnectionString)
+    {
+        SslMode = SslMode.Require,
+        TrustServerCertificate = true
+    };
+
+    // Validar se o Host foi configurado
+    if (string.IsNullOrWhiteSpace(npgBuilder.Host))
+    {
+        throw new InvalidOperationException(
+            "Connection string não contém Host. " +
+            "Verifique se a variável de ambiente está configurada corretamente. " +
+            $"Connection string (parcial): {MaskConnectionString(baseConnectionString)}");
+    }
+}
+catch (ArgumentException ex)
+{
+    throw new InvalidOperationException(
+        $"Erro ao processar connection string: {ex.Message}. " +
+        $"Verifique se a connection string está no formato correto. " +
+        $"Connection string (parcial): {MaskConnectionString(baseConnectionString)}", ex);
+}
 
 if (!string.IsNullOrWhiteSpace(rootCertSetting))
 {
@@ -57,13 +92,38 @@ var chirpStackConfig = builder.Configuration.GetSection("ChirpStack");
 var chirpStackUrl = ReplaceEnvironmentVariables(chirpStackConfig["ApiUrl"] ?? "http://srv01.automais.io:8080");
 var chirpStackToken = ReplaceEnvironmentVariables(chirpStackConfig["ApiToken"] ?? "");
 
-Console.WriteLine($"🔗 ChirpStack URL (gRPC): {chirpStackUrl}");
+// Validar URL do ChirpStack
+if (string.IsNullOrWhiteSpace(chirpStackUrl))
+{
+    Console.WriteLine("⚠️ ChirpStack URL não configurada. Algumas funcionalidades podem não funcionar.");
+}
+else
+{
+    // Validar formato da URL
+    if (!Uri.TryCreate(chirpStackUrl, UriKind.Absolute, out var uri))
+    {
+        Console.WriteLine($"⚠️ ChirpStack URL inválida: {chirpStackUrl}");
+    }
+    else
+    {
+        Console.WriteLine($"🔗 ChirpStack URL (gRPC): {chirpStackUrl}");
+    }
+}
+
 Console.WriteLine($"🔑 Token configurado: {(!string.IsNullOrEmpty(chirpStackToken) ? "Sim ✅" : "Não ⚠️")}");
 
 builder.Services.AddSingleton<IChirpStackClient>(sp => 
 {
     var logger = sp.GetService<ILogger<ChirpStackClient>>();
-    return new ChirpStackClient(chirpStackUrl, chirpStackToken, logger);
+    try
+    {
+        return new ChirpStackClient(chirpStackUrl, chirpStackToken, logger);
+    }
+    catch (Exception ex)
+    {
+        logger?.LogError(ex, "Erro ao criar ChirpStackClient");
+        throw;
+    }
 });
 
 // Repositórios (EF Core)
@@ -196,6 +256,35 @@ Console.WriteLine($"📡 ChirpStack: {chirpStackUrl}\n");
 app.Run();
 
 // ===== Helper Functions =====
+
+/// <summary>
+/// Mascara informações sensíveis da connection string para logs
+/// </summary>
+static string MaskConnectionString(string connectionString)
+{
+    if (string.IsNullOrWhiteSpace(connectionString))
+        return "(vazia)";
+
+    // Mascara senha e outros dados sensíveis
+    var masked = connectionString;
+    var patterns = new[] { "Password=", "Pwd=", "User ID=", "Username=", "User=" };
+    
+    foreach (var pattern in patterns)
+    {
+        var index = masked.IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
+        if (index >= 0)
+        {
+            var start = index + pattern.Length;
+            var end = masked.IndexOf(';', start);
+            if (end < 0) end = masked.Length;
+            
+            var length = end - start;
+            masked = masked.Substring(0, start) + new string('*', Math.Min(length, 10)) + masked.Substring(end);
+        }
+    }
+    
+    return masked;
+}
 
 /// <summary>
 /// Substitui variáveis de ambiente no formato ${VAR} pelos valores reais

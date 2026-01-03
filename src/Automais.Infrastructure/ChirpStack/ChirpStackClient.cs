@@ -30,6 +30,12 @@ public class ChirpStackClient : IChirpStackClient
     /// </summary>
     private GrpcChannel CreateChannel()
     {
+        if (string.IsNullOrWhiteSpace(_apiUrl))
+        {
+            _logger?.LogError("ChirpStack API URL não está configurada. Configure 'ChirpStack:ApiUrl' no appsettings.json");
+            throw new InvalidOperationException("ChirpStack API URL não está configurada.");
+        }
+
         var httpHandler = new HttpClientHandler
         {
             ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
@@ -44,10 +50,18 @@ public class ChirpStackClient : IChirpStackClient
                 new AuthenticationHeaderValue("Bearer", _apiToken);
         }
 
-        return GrpcChannel.ForAddress(_apiUrl, new GrpcChannelOptions
+        try
         {
-            HttpClient = httpClient
-        });
+            return GrpcChannel.ForAddress(_apiUrl, new GrpcChannelOptions
+            {
+                HttpClient = httpClient
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao criar canal gRPC para {ApiUrl}", _apiUrl);
+            throw new InvalidOperationException($"Erro ao criar canal gRPC: {ex.Message}", ex);
+        }
     }
 
     /// <summary>

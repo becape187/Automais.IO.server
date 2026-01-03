@@ -23,9 +23,17 @@ public class UsersController : ControllerBase
     [HttpGet("tenants/{tenantId:guid}/users")]
     public async Task<ActionResult<IEnumerable<TenantUserDto>>> GetByTenant(Guid tenantId, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Listando usuários do tenant {TenantId}", tenantId);
-        var users = await _tenantUserService.GetByTenantAsync(tenantId, cancellationToken);
-        return Ok(users);
+        try
+        {
+            _logger.LogInformation("Listando usuários do tenant {TenantId}", tenantId);
+            var users = await _tenantUserService.GetByTenantAsync(tenantId, cancellationToken);
+            return Ok(users);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao listar usuários do tenant {TenantId}", tenantId);
+            return StatusCode(500, new { message = "Erro interno do servidor ao listar usuários", error = ex.Message });
+        }
     }
 
     [HttpPost("tenants/{tenantId:guid}/users")]

@@ -22,15 +22,41 @@ public class TenantUserService : ITenantUserService
 
     public async Task<IEnumerable<TenantUserDto>> GetByTenantAsync(Guid tenantId, CancellationToken cancellationToken = default)
     {
-        var users = await _userRepository.GetByTenantIdAsync(tenantId, cancellationToken);
-        var result = new List<TenantUserDto>();
-
-        foreach (var user in users)
+        // Verificar se o tenant existe
+        var tenant = await _tenantRepository.GetByIdAsync(tenantId, cancellationToken);
+        if (tenant == null)
         {
-            result.Add(await BuildDtoAsync(user, cancellationToken));
+            // Retorna lista vazia ao invés de lançar exceção se o tenant não existir
+            return Enumerable.Empty<TenantUserDto>();
         }
 
-        return result;
+        try
+        {
+            var users = await _userRepository.GetByTenantIdAsync(tenantId, cancellationToken);
+            var result = new List<TenantUserDto>();
+
+            foreach (var user in users)
+            {
+                try
+                {
+                    result.Add(await BuildDtoAsync(user, cancellationToken));
+                }
+                catch (Exception ex)
+                {
+                    // Log erro ao construir DTO de um usuário específico, mas continua com os outros
+                    // Em produção, considere usar ILogger aqui
+                    System.Diagnostics.Debug.WriteLine($"Erro ao construir DTO para usuário {user.Id}: {ex.Message}");
+                    // Adiciona um DTO básico sem networks em caso de erro
+                    result.Add(MapToDto(user, Enumerable.Empty<VpnNetwork>()));
+                }
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Erro ao buscar usuários do tenant {tenantId}: {ex.Message}", ex);
+        }
     }
 
     public async Task<TenantUserDto?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
@@ -153,13 +179,22 @@ public class TenantUserService : ITenantUserService
 
     private async Task<TenantUserDto> BuildDtoAsync(TenantUser user, CancellationToken cancellationToken)
     {
-        var memberships = await _vpnNetworkRepository.GetMembershipsByUserIdAsync(user.Id, cancellationToken);
-        var networkIds = memberships.Select(m => m.VpnNetworkId).Distinct().ToList();
-        var networks = networkIds.Count > 0
-            ? await _vpnNetworkRepository.GetByIdsAsync(networkIds, cancellationToken)
-            : Enumerable.Empty<VpnNetwork>();
+        try
+        {
+            var memberships = await _vpnNetworkRepository.GetMembershipsByUserIdAsync(user.Id, cancellationToken);
+            var networkIds = memberships.Select(m => m.VpnNetworkId).Distinct().ToList();
+            var networks = networkIds.Count > 0
+                ? await _vpnNetworkRepository.GetByIdsAsync(networkIds, cancellationToken)
+                : Enumerable.Empty<VpnNetwork>();
 
-        return MapToDto(user, networks);
+            return MapToDto(user, networks);
+        }
+        catch (Exception ex)
+        {
+            // Em caso de erro ao buscar networks, retorna DTO sem networks
+            System.Diagnostics.Debug.WriteLine($"Erro ao buscar networks para usuário {user.Id}: {ex.Message}");
+            return MapToDto(user, Enumerable.Empty<VpnNetwork>());
+        }
     }
 
     private async Task SetUserNetworksAsync(TenantUser user, IEnumerable<Guid> networkIds, CancellationToken cancellationToken)

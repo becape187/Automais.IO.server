@@ -106,8 +106,15 @@ builder.Services.AddSingleton<IRouterOsClient>(sp =>
     return new RouterOsClient(logger);
 });
 
-// Controllers
-builder.Services.AddControllers();
+// Controllers com serialização JSON configurada
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Serializar enums como strings ao invés de números
+        options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        // Ignorar propriedades nulas
+        options.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+    });
 
 // Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
@@ -121,20 +128,29 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// CORS (para desenvolvimento)
+// CORS (para desenvolvimento e produção)
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "http://localhost:5173")
+        policy.WithOrigins(
+                "http://localhost:3000", 
+                "http://localhost:5173",
+                "https://automais.io",
+                "https://www.automais.io"
+              )
               .AllowAnyMethod()
-              .AllowAnyHeader();
+              .AllowAnyHeader()
+              .AllowCredentials();
     });
 });
 
 var app = builder.Build();
 
 // ===== Configuração do Pipeline HTTP =====
+
+// Tratamento global de erros (deve vir primeiro)
+app.UseExceptionHandler("/error");
 
 // Swagger sempre habilitado
 app.UseSwagger();
@@ -144,9 +160,22 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "swagger"; // Swagger em /swagger
 });
 
+// CORS deve vir antes de UseAuthorization
 app.UseCors("AllowFrontend");
 app.UseAuthorization();
 app.MapControllers();
+
+// Endpoint de tratamento de erros
+app.Map("/error", (HttpContext context) =>
+{
+    var exception = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;
+    var response = new
+    {
+        message = exception?.Message ?? "Erro interno do servidor",
+        detail = app.Environment.IsDevelopment() ? exception?.ToString() : null
+    };
+    return Results.Json(response, statusCode: 500);
+});
 
 // Health check
 app.MapGet("/health", () => Results.Ok(new 

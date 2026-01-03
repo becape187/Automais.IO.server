@@ -51,20 +51,6 @@ jobs:
         source: "deploy.tar.gz"
         target: "/root/automais.io/server.io/"
 
-    - name: Copy systemd service file
-      uses: appleboy/scp-action@master
-      with:
-        host: ${{ secrets.SERVER_HOST }}
-        username: ${{ secrets.SERVER_USER }}
-        password: ${{ secrets.SERVER_PASSWORD }}
-        port: ${{ secrets.SERVER_PORT || 22 }}
-        timeout: 300s
-        command_timeout: 300s
-        use_insecure_cipher: false
-        debug: true
-        source: "deploy/automais-api.service"
-        target: "/root/automais.io/server.io/"
-
     - name: Deploy on server
       uses: appleboy/ssh-action@master
       with:
@@ -82,38 +68,6 @@ jobs:
           # Ir para diretório da aplicação
           cd /root/automais.io/server.io
           
-          # Verificar se arquivo de serviço foi copiado
-          echo "Verificando arquivo de serviço no diretório da aplicação..."
-          if ls -la automais-api.service 2>/dev/null; then
-            echo "✓ Arquivo encontrado"
-          else
-            echo "✗ Arquivo NÃO encontrado"
-            echo "Conteúdo do diretório:"
-            ls -la | head -20
-            echo "ERRO: Arquivo automais-api.service não foi copiado corretamente"
-            exit 1
-          fi
-          
-          echo "Copiando arquivo para /etc/systemd/system/..."
-          cp automais-api.service /etc/systemd/system/automais-api.service
-          chmod 644 /etc/systemd/system/automais-api.service
-          
-          echo "Verificando se arquivo foi copiado corretamente..."
-          if [ -f /etc/systemd/system/automais-api.service ]; then
-            echo "✓ Arquivo copiado com sucesso"
-            ls -la /etc/systemd/system/automais-api.service
-          else
-            echo "✗ ERRO: Falha ao copiar arquivo"
-            exit 1
-          fi
-          
-          # Recarregar systemd
-          echo "Recarregando systemd..."
-          systemctl daemon-reload
-          
-          # Ir para diretório da aplicação
-          cd /root/automais.io/server.io
-          
           echo "Extraindo arquivos da aplicação..."
           tar -xzf deploy.tar.gz
           rm deploy.tar.gz
@@ -121,23 +75,33 @@ jobs:
           # Criar diretório de backups se não existir
           mkdir -p /backups/routers
           
-          echo "Habilitando serviço..."
-          systemctl enable automais-api.service || echo "Aviso: Erro ao habilitar (pode já estar habilitado)"
-          
-          echo "Verificando se serviço está habilitado..."
-          if systemctl is-enabled automais-api.service >/dev/null 2>&1; then
-            echo "✓ Serviço está habilitado"
+          echo "Verificando serviço systemd..."
+          if systemctl list-unit-files | grep -q automais-api.service; then
+            echo "✓ Serviço encontrado"
+            
+            # Verificar se está habilitado
+            if systemctl is-enabled automais-api.service >/dev/null 2>&1; then
+              echo "✓ Serviço está habilitado"
+            else
+              echo "Habilitando serviço..."
+              systemctl enable automais-api.service || echo "Aviso: Erro ao habilitar"
+            fi
+            
+            # Recarregar systemd (caso o arquivo tenha sido atualizado manualmente)
+            systemctl daemon-reload
+            
+            echo "Reiniciando serviço..."
+            systemctl restart automais-api.service
+            
+            # Aguardar um pouco e verificar status
+            sleep 3
+            echo "Status do serviço:"
+            systemctl status automais-api.service --no-pager || true
           else
-            echo "✗ Serviço não está habilitado"
+            echo "⚠️  Serviço automais-api.service não encontrado"
+            echo "Certifique-se de que o serviço foi criado manualmente em /etc/systemd/system/automais-api.service"
+            exit 1
           fi
-          
-          echo "Reiniciando serviço..."
-          systemctl restart automais-api.service
-          
-          # Aguardar um pouco e verificar status
-          sleep 3
-          echo "Status do serviço:"
-          systemctl status automais-api.service --no-pager || true
           
           echo "=== Deploy concluído ==="
 

@@ -55,6 +55,13 @@ public class RouterService : IRouterService
             throw new KeyNotFoundException($"Tenant com ID {tenantId} não encontrado.");
         }
 
+        // Validar VpnNetworkId se fornecido
+        if (dto.VpnNetworkId.HasValue)
+        {
+            // TODO: Adicionar IVpnNetworkRepository para validar se a rede VPN existe
+            // Por enquanto, a validação será feita pelo Entity Framework (foreign key constraint)
+        }
+
         if (!string.IsNullOrWhiteSpace(dto.SerialNumber))
         {
             if (await _routerRepository.SerialNumberExistsAsync(dto.SerialNumber, cancellationToken))
@@ -101,8 +108,9 @@ public class RouterService : IRouterService
             catch (Exception ex)
             {
                 // Logar erro mas não falhar criação do router
-                // TODO: Adicionar logging
                 // O WireGuard pode ser provisionado depois manualmente
+                // TODO: Adicionar ILogger ao RouterService para logar este erro
+                // Por enquanto, o erro será logado no controller se propagar
             }
         }
         

@@ -2,6 +2,7 @@ using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 using Automais.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace Automais.Infrastructure.Repositories;
 
@@ -11,10 +12,12 @@ namespace Automais.Infrastructure.Repositories;
 public class RouterRepository : IRouterRepository
 {
     private readonly ApplicationDbContext _context;
+    private readonly ILogger<RouterRepository>? _logger;
 
-    public RouterRepository(ApplicationDbContext context)
+    public RouterRepository(ApplicationDbContext context, ILogger<RouterRepository>? logger = null)
     {
         _context = context;
+        _logger = logger;
     }
 
     public async Task<Router?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
@@ -53,9 +56,37 @@ public class RouterRepository : IRouterRepository
 
     public async Task<Router> CreateAsync(Router router, CancellationToken cancellationToken = default)
     {
-        _context.Set<Router>().Add(router);
-        await _context.SaveChangesAsync(cancellationToken);
-        return router;
+        try
+        {
+            _logger?.LogDebug("Tentando criar router {RouterId} com nome {Name}, TenantId: {TenantId}, VpnNetworkId: {VpnNetworkId}", 
+                router.Id, router.Name, router.TenantId, router.VpnNetworkId);
+            
+            _context.Set<Router>().Add(router);
+            await _context.SaveChangesAsync(cancellationToken);
+            
+            _logger?.LogInformation("Router {RouterId} criado com sucesso", router.Id);
+            return router;
+        }
+        catch (DbUpdateException ex)
+        {
+            var errorDetails = ex.InnerException?.Message ?? ex.Message;
+            _logger?.LogError(ex, "Erro do Entity Framework ao criar router. Erro: {ErrorDetails}. StackTrace: {StackTrace}", 
+                errorDetails, ex.InnerException?.StackTrace ?? ex.StackTrace);
+            
+            // Verificar se é erro de foreign key (VpnNetworkId não existe)
+            if (errorDetails.Contains("foreign key") || errorDetails.Contains("violates foreign key constraint"))
+            {
+                throw new InvalidOperationException($"Rede VPN com ID {router.VpnNetworkId} não encontrada ou inválida. Verifique se o VpnNetworkId existe no banco de dados.");
+            }
+            
+            // Re-throw para que o controller possa tratar
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro inesperado ao criar router. Erro: {ErrorMessage}", ex.Message);
+            throw;
+        }
     }
 
     public async Task<Router> UpdateAsync(Router router, CancellationToken cancellationToken = default)

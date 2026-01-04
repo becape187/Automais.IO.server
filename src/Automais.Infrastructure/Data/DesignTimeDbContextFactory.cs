@@ -66,7 +66,6 @@ public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Applicatio
         optionsBuilder.UseNpgsql(connectionString, opt =>
         {
             opt.EnableRetryOnFailure();
-            opt.MapEnumToText();
         });
         // REMOVIDO: UseSnakeCaseNamingConvention() 
         // O banco usa PascalCase (Id, Name, TenantId), não snake_case

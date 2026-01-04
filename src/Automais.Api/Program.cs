@@ -135,7 +135,6 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(npgBuilder.ConnectionString, opt =>
     {
         opt.EnableRetryOnFailure();
-        opt.MapEnumToText();
     });
     // REMOVIDO: UseSnakeCaseNamingConvention() 
     // O banco usa PascalCase (Id, Name, TenantId), não snake_case

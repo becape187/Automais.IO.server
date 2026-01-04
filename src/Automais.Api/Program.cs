@@ -1,3 +1,4 @@
+using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 using Automais.Core.Services;
 using Automais.Infrastructure.ChirpStack;
@@ -5,6 +6,7 @@ using Automais.Infrastructure.Data;
 using Automais.Infrastructure.Repositories;
 using Automais.Infrastructure.RouterOS;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 
@@ -272,6 +274,62 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+// Testar conexão com banco de dados na inicialização
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+logger.LogInformation("🔍 Iniciando teste de conexão com banco de dados...");
+
+try
+{
+    using (var scope = app.Services.CreateScope())
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        
+        logger.LogInformation("📊 Tentando conectar ao banco de dados...");
+        logger.LogInformation("📊 Host: {Host}", npgBuilder.Host);
+        logger.LogInformation("📊 Port: {Port}", npgBuilder.Port);
+        logger.LogInformation("📊 Database: {Database}", npgBuilder.Database);
+        logger.LogInformation("📊 Username: {Username}", npgBuilder.Username);
+        logger.LogInformation("📊 SSL Mode: {SslMode}", npgBuilder.SslMode);
+        logger.LogInformation("📊 Command Timeout: {CommandTimeout}s", npgBuilder.CommandTimeout);
+        logger.LogInformation("📊 Connection Timeout: {Timeout}s", npgBuilder.Timeout);
+        
+        var canConnect = await dbContext.Database.CanConnectAsync();
+        
+        if (canConnect)
+        {
+            logger.LogInformation("✅ Conexão com banco de dados estabelecida com sucesso!");
+            
+            // Testar uma query simples
+            try
+            {
+                var tenantCount = await dbContext.Set<Tenant>().CountAsync();
+                logger.LogInformation("✅ Query de teste executada com sucesso! Total de tenants: {Count}", tenantCount);
+            }
+            catch (Exception queryEx)
+            {
+                logger.LogWarning(queryEx, "⚠️ Conexão OK, mas query de teste falhou: {Error}", queryEx.Message);
+            }
+        }
+        else
+        {
+            logger.LogError("❌ Não foi possível conectar ao banco de dados!");
+        }
+    }
+}
+catch (Npgsql.NpgsqlException ex)
+{
+    logger.LogError(ex, "❌ Erro Npgsql ao conectar ao banco de dados: {Error}", ex.Message);
+    logger.LogError("❌ Inner Exception: {InnerException}", ex.InnerException?.Message);
+    logger.LogError("❌ SQL State: {SqlState}", ex.SqlState);
+}
+catch (Exception ex)
+{
+    logger.LogError(ex, "❌ Erro inesperado ao testar conexão com banco de dados: {Error}", ex.Message);
+    logger.LogError("❌ Inner Exception: {InnerException}", ex.InnerException?.Message);
+}
+
+logger.LogInformation("🔍 Teste de conexão concluído.");
 
 // ===== Configuração do Pipeline HTTP =====
 

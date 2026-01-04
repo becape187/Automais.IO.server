@@ -1,6 +1,7 @@
 using Automais.Core.DTOs;
 using Automais.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Npgsql;
 
 namespace Automais.Api.Controllers;
 
@@ -23,9 +24,42 @@ public class VpnNetworksController : ControllerBase
     [HttpGet("tenants/{tenantId:guid}/vpn/networks")]
     public async Task<ActionResult<IEnumerable<VpnNetworkDto>>> GetByTenant(Guid tenantId, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Listando redes VPN do tenant {TenantId}", tenantId);
-        var networks = await _vpnNetworkService.GetByTenantAsync(tenantId, cancellationToken);
-        return Ok(networks);
+        try
+        {
+            _logger.LogInformation("Listando redes VPN do tenant {TenantId}", tenantId);
+            var networks = await _vpnNetworkService.GetByTenantAsync(tenantId, cancellationToken);
+            return Ok(networks);
+        }
+        catch (Npgsql.NpgsqlException ex)
+        {
+            _logger.LogError(ex, "Erro de conexão com banco de dados ao listar redes VPN do tenant {TenantId}", tenantId);
+            return StatusCode(503, new 
+            { 
+                message = "Resource temporarily unavailable",
+                detail = "Erro ao conectar com o banco de dados. Tente novamente em alguns instantes.",
+                innerException = ex.InnerException?.Message
+            });
+        }
+        catch (Microsoft.EntityFrameworkCore.DbUpdateException ex)
+        {
+            _logger.LogError(ex, "Erro do Entity Framework ao listar redes VPN do tenant {TenantId}", tenantId);
+            return StatusCode(503, new 
+            { 
+                message = "Resource temporarily unavailable",
+                detail = "Erro ao acessar o banco de dados. Tente novamente em alguns instantes.",
+                innerException = ex.InnerException?.Message
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro inesperado ao listar redes VPN do tenant {TenantId}", tenantId);
+            return StatusCode(500, new 
+            { 
+                message = "Erro interno do servidor",
+                detail = ex.Message,
+                innerException = ex.InnerException?.Message
+            });
+        }
     }
 
     [HttpPost("tenants/{tenantId:guid}/vpn/networks")]

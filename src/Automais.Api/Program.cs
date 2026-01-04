@@ -91,7 +91,13 @@ try
     npgBuilder = new NpgsqlConnectionStringBuilder(baseConnectionString)
     {
         SslMode = SslMode.Require,
-        TrustServerCertificate = true
+        TrustServerCertificate = true,
+        CommandTimeout = 60, // Timeout para comandos SQL (60 segundos)
+        Timeout = 30, // Timeout para estabelecer conexão (30 segundos)
+        ConnectionIdleLifetime = 300, // Fechar conexões idle após 5 minutos
+        ConnectionPruningInterval = 10, // Verificar conexões idle a cada 10 segundos
+        MaxPoolSize = 100, // Máximo de conexões no pool
+        MinPoolSize = 5 // Mínimo de conexões no pool
     };
 
     // Validar se o Host foi configurado
@@ -134,7 +140,11 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 {
     options.UseNpgsql(npgBuilder.ConnectionString, opt =>
     {
-        opt.EnableRetryOnFailure();
+        opt.EnableRetryOnFailure(
+            maxRetryCount: 5,
+            maxRetryDelay: TimeSpan.FromSeconds(30),
+            errorCodesToAdd: null);
+        opt.CommandTimeout(60); // Timeout adicional para comandos EF Core
     });
     // REMOVIDO: UseSnakeCaseNamingConvention() 
     // O banco usa PascalCase (Id, Name, TenantId), não snake_case

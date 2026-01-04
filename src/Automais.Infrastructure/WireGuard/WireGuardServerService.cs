@@ -56,14 +56,17 @@ public class WireGuardServerService : IWireGuardServerService
             throw new InvalidOperationException($"Router já possui peer WireGuard para esta rede VPN.");
 
         // Gerar par de chaves WireGuard
-        var (publicKey, privateKey) = GenerateWireGuardKeys();
+        var (publicKey, privateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
 
         // Alocar IP da VPN
         var routerIp = await AllocateVpnIpAsync(vpnNetworkId, cancellationToken);
 
-        // Construir allowed-ips (IP do router + redes permitidas)
+        // Construir allowed-ips (IP do router + redes permitidas opcionais)
         var allowedIps = new List<string> { routerIp };
-        allowedIps.AddRange(allowedNetworks);
+        if (allowedNetworks != null && allowedNetworks.Any())
+        {
+            allowedIps.AddRange(allowedNetworks);
+        }
         var allowedIpsString = string.Join(",", allowedIps);
 
         // Criar peer no banco
@@ -84,29 +87,37 @@ public class WireGuardServerService : IWireGuardServerService
 
         await _peerRepository.CreateAsync(peer, cancellationToken);
 
-        // Salvar redes permitidas
-        foreach (var network in allowedNetworks)
+        // Salvar redes permitidas (se houver)
+        if (allowedNetworks != null && allowedNetworks.Any())
         {
-            await _allowedNetworkRepository.CreateAsync(new RouterAllowedNetwork
+            foreach (var network in allowedNetworks)
             {
-                Id = Guid.NewGuid(),
-                RouterId = routerId,
-                NetworkCidr = network,
-                CreatedAt = DateTime.UtcNow
-            }, cancellationToken);
+                await _allowedNetworkRepository.CreateAsync(new RouterAllowedNetwork
+                {
+                    Id = Guid.NewGuid(),
+                    RouterId = routerId,
+                    NetworkCidr = network,
+                    CreatedAt = DateTime.UtcNow
+                }, cancellationToken);
+            }
         }
 
         // Aplicar no WireGuard server (Linux)
         var interfaceName = GetInterfaceName(vpnNetworkId);
+        
+        // Garantir que a interface existe (criar arquivo de configuração inicial se necessário)
+        await EnsureInterfaceExistsAsync(interfaceName, vpnNetwork, cancellationToken);
+        
+        // Adicionar peer à interface
         await ExecuteWireGuardCommandAsync(
             $"set {interfaceName} peer {publicKey} allowed-ips {allowedIpsString}"
         );
 
-        // Salvar configuração persistente
+        // Salvar configuração persistente no arquivo
         await SaveWireGuardConfigAsync(interfaceName);
 
         // Gerar e salvar arquivo .conf
-        var config = await GenerateConfigContentAsync(router, peer, vpnNetwork, allowedNetworks);
+        var config = await GenerateConfigContentAsync(router, peer, vpnNetwork, allowedNetworks, cancellationToken);
         peer.ConfigContent = config;
         await _peerRepository.UpdateAsync(peer, cancellationToken);
 
@@ -198,7 +209,7 @@ public class WireGuardServerService : IWireGuardServerService
 
         // Regenerar e salvar config
         var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(peer.VpnNetworkId, cancellationToken);
-        var config = await GenerateConfigContentAsync(router, peer, vpnNetwork!, allowedNetworks.Select(n => n.NetworkCidr));
+        var config = await GenerateConfigContentAsync(router, peer, vpnNetwork!, allowedNetworks.Select(n => n.NetworkCidr), cancellationToken);
         peer.ConfigContent = config;
         await _peerRepository.UpdateAsync(peer, cancellationToken);
 
@@ -240,7 +251,7 @@ public class WireGuardServerService : IWireGuardServerService
             throw new KeyNotFoundException("Rede VPN não encontrada.");
 
         var allowedNetworks = await _allowedNetworkRepository.GetByRouterIdAsync(routerId, cancellationToken);
-        var config = await GenerateConfigContentAsync(router, peer, vpnNetwork, allowedNetworks.Select(n => n.NetworkCidr));
+        var config = await GenerateConfigContentAsync(router, peer, vpnNetwork, allowedNetworks.Select(n => n.NetworkCidr), cancellationToken);
 
         // Salvar no banco
         peer.ConfigContent = config;
@@ -340,10 +351,42 @@ public class WireGuardServerService : IWireGuardServerService
 
     private async Task SaveWireGuardConfigAsync(string interfaceName)
     {
-        // TODO: Implementar salvamento do arquivo de configuração
-        // wg-quick save wg-tenant1
-        await Task.CompletedTask;
-        _logger?.LogDebug("Configuração WireGuard salva para interface {InterfaceName}", interfaceName);
+        try
+        {
+            // Usar wg-quick save para salvar a configuração atual em arquivo
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg-quick",
+                    Arguments = $"save {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+            {
+                _logger?.LogWarning("Erro ao salvar configuração WireGuard: {Error}. Interface pode não estar ativa ainda.", error);
+                // Não lança exceção - a interface pode não estar ativa ainda
+            }
+            else
+            {
+                _logger?.LogDebug("Configuração WireGuard salva para interface {InterfaceName}", interfaceName);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Exceção ao salvar configuração WireGuard para interface {InterfaceName}", interfaceName);
+            // Não lança exceção - continua operação
+        }
     }
 
     private string GetInterfaceName(Guid vpnNetworkId)
@@ -353,6 +396,125 @@ public class WireGuardServerService : IWireGuardServerService
         return $"wg-{vpnNetworkId.ToString("N")[..8]}";
     }
 
+    /// <summary>
+    /// Garante que a interface WireGuard existe, criando o arquivo de configuração inicial se necessário
+    /// </summary>
+    private async Task EnsureInterfaceExistsAsync(
+        string interfaceName,
+        VpnNetwork vpnNetwork,
+        CancellationToken cancellationToken = default)
+    {
+        var configPath = $"/etc/wireguard/{interfaceName}.conf";
+        
+        // Se o arquivo já existe, não precisa criar
+        if (File.Exists(configPath))
+        {
+            _logger?.LogDebug("Interface WireGuard {InterfaceName} já existe", interfaceName);
+            return;
+        }
+
+        // Gerar chaves do servidor para esta interface
+        var (serverPublicKey, serverPrivateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
+        
+        // Parse do CIDR para obter o IP da interface do servidor
+        var (networkIp, prefixLength) = ParseCidr(vpnNetwork.Cidr);
+        // O servidor usa o primeiro IP da rede (ex: 10.100.1.0/24 -> servidor usa 10.100.1.1)
+        var serverIp = new IPAddress(new byte[]
+        {
+            networkIp.GetAddressBytes()[0],
+            networkIp.GetAddressBytes()[1],
+            networkIp.GetAddressBytes()[2],
+            (byte)(networkIp.GetAddressBytes()[3] + 1)
+        });
+
+        // Criar conteúdo do arquivo de configuração
+        var configContent = new StringBuilder();
+        configContent.AppendLine("[Interface]");
+        configContent.AppendLine($"PrivateKey = {serverPrivateKey}");
+        configContent.AppendLine($"Address = {serverIp}/{prefixLength}");
+        configContent.AppendLine($"ListenPort = 51820");
+        
+        // Adicionar DNS se configurado
+        if (!string.IsNullOrWhiteSpace(vpnNetwork.DnsServers))
+        {
+            configContent.AppendLine($"DNS = {vpnNetwork.DnsServers}");
+        }
+        
+        configContent.AppendLine();
+        configContent.AppendLine("# Peers serão adicionados automaticamente pela API");
+
+        // Criar diretório se não existir
+        var configDir = Path.GetDirectoryName(configPath);
+        if (!string.IsNullOrEmpty(configDir) && !Directory.Exists(configDir))
+        {
+            Directory.CreateDirectory(configDir);
+            _logger?.LogInformation("Diretório WireGuard criado: {ConfigDir}", configDir);
+        }
+
+        // Salvar arquivo de configuração
+        await File.WriteAllTextAsync(configPath, configContent.ToString(), cancellationToken);
+        
+        // Definir permissões corretas (600 = rw-------)
+        try
+        {
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/bin/chmod",
+                    Arguments = $"600 {configPath}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            process.Start();
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Erro ao definir permissões do arquivo de configuração WireGuard");
+        }
+
+        _logger?.LogInformation("Arquivo de configuração WireGuard criado: {ConfigPath}", configPath);
+        
+        // Tentar ativar a interface usando wg-quick
+        try
+        {
+            var upProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg-quick",
+                    Arguments = $"up {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            upProcess.Start();
+            var output = await upProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await upProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await upProcess.WaitForExitAsync(cancellationToken);
+
+            if (upProcess.ExitCode == 0)
+            {
+                _logger?.LogInformation("Interface WireGuard {InterfaceName} ativada com sucesso", interfaceName);
+            }
+            else
+            {
+                _logger?.LogWarning("Erro ao ativar interface WireGuard {InterfaceName}: {Error}", interfaceName, error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Exceção ao ativar interface WireGuard {InterfaceName}", interfaceName);
+            // Não lança exceção - a interface pode ser ativada manualmente depois
+        }
+    }
+
     private string GetServerPublicIp()
     {
         // TODO: Obter IP público do servidor da configuração
@@ -360,10 +522,73 @@ public class WireGuardServerService : IWireGuardServerService
         return "srv01.automais.io"; // ou IP público real
     }
 
-    private (string publicKey, string privateKey) GenerateWireGuardKeys()
+    private async Task<(string publicKey, string privateKey)> GenerateWireGuardKeysAsync(CancellationToken cancellationToken = default)
     {
-        // Geração de chaves WireGuard usando wg genkey e wg pubkey
-        // Por enquanto usa implementação mockada - TODO: usar wg genkey via shell
+        try
+        {
+            // Gerar chave privada usando wg genkey
+            var genkeyProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = "genkey",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            genkeyProcess.Start();
+            var privateKey = (await genkeyProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            var error = await genkeyProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await genkeyProcess.WaitForExitAsync(cancellationToken);
+
+            if (genkeyProcess.ExitCode != 0 || string.IsNullOrEmpty(privateKey))
+            {
+                _logger?.LogWarning("Erro ao gerar chave privada WireGuard: {Error}. Usando método alternativo.", error);
+                return GenerateWireGuardKeysFallback();
+            }
+
+            // Gerar chave pública a partir da privada: echo <privateKey> | wg pubkey
+            var pubkeyProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = $"-c \"echo '{privateKey}' | /usr/bin/wg pubkey\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            pubkeyProcess.Start();
+            var publicKey = (await pubkeyProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            var pubkeyError = await pubkeyProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await pubkeyProcess.WaitForExitAsync(cancellationToken);
+
+            if (pubkeyProcess.ExitCode != 0 || string.IsNullOrEmpty(publicKey))
+            {
+                _logger?.LogWarning("Erro ao gerar chave pública WireGuard: {Error}. Usando método alternativo.", pubkeyError);
+                return GenerateWireGuardKeysFallback();
+            }
+
+            return (publicKey, privateKey);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Exceção ao gerar chaves WireGuard. Usando método alternativo.");
+            return GenerateWireGuardKeysFallback();
+        }
+    }
+
+    private (string publicKey, string privateKey) GenerateWireGuardKeysFallback()
+    {
+        // Método fallback caso wg genkey não funcione (para desenvolvimento/testes)
+        _logger?.LogWarning("Usando geração de chaves WireGuard mockada (fallback)");
         var random = new Random();
         var privateKeyBytes = new byte[32];
         random.NextBytes(privateKeyBytes);
@@ -372,8 +597,6 @@ public class WireGuardServerService : IWireGuardServerService
             .Replace('+', '-')
             .Replace('/', '_');
 
-        // Para gerar a chave pública, precisaríamos executar: echo <privateKey> | wg pubkey
-        // Por enquanto gera mockada
         random.NextBytes(privateKeyBytes);
         var publicKey = Convert.ToBase64String(privateKeyBytes)
             .TrimEnd('=')
@@ -387,7 +610,8 @@ public class WireGuardServerService : IWireGuardServerService
         Router router,
         RouterWireGuardPeer peer,
         VpnNetwork vpnNetwork,
-        IEnumerable<string> allowedNetworks)
+        IEnumerable<string> allowedNetworks,
+        CancellationToken cancellationToken = default)
     {
         var sb = new StringBuilder();
         sb.AppendLine("[Interface]");
@@ -395,24 +619,87 @@ public class WireGuardServerService : IWireGuardServerService
         sb.AppendLine($"Address = {peer.AllowedIps}");
         sb.AppendLine();
         sb.AppendLine("[Peer]");
-        sb.AppendLine($"PublicKey = {GetServerPublicKey(peer.VpnNetworkId)}"); // TODO: Buscar chave pública do servidor
+        var serverPublicKey = await GetServerPublicKeyAsync(peer.VpnNetworkId, cancellationToken);
+        sb.AppendLine($"PublicKey = {serverPublicKey}");
         if (!string.IsNullOrWhiteSpace(peer.Endpoint))
         {
             sb.AppendLine($"Endpoint = {peer.Endpoint}:{peer.ListenPort ?? 51820}");
         }
 
-        // Adicionar todas as redes permitidas
+        // Adicionar todas as redes permitidas (se houver)
         var allNetworks = new List<string> { vpnNetwork.Cidr };
-        allNetworks.AddRange(allowedNetworks);
+        if (allowedNetworks != null && allowedNetworks.Any())
+        {
+            allNetworks.AddRange(allowedNetworks);
+        }
         sb.AppendLine($"AllowedIPs = {string.Join(", ", allNetworks)}");
         sb.AppendLine("PersistentKeepalive = 25");
 
         return sb.ToString();
     }
 
-    private string GetServerPublicKey(Guid vpnNetworkId)
+    private async Task<string> GetServerPublicKeyAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default)
     {
-        // TODO: Buscar chave pública do servidor da VpnNetwork ou configuração
+        // Buscar chave pública do servidor da VpnNetwork
+        var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
+        if (vpnNetwork == null)
+            throw new KeyNotFoundException("Rede VPN não encontrada.");
+
+        // TODO: Adicionar campo ServerPublicKey na entidade VpnNetwork
+        // Por enquanto, buscar do arquivo de configuração da interface
+        var interfaceName = GetInterfaceName(vpnNetworkId);
+        var configPath = $"/etc/wireguard/{interfaceName}.conf";
+        
+        if (File.Exists(configPath))
+        {
+            var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
+            foreach (var line in configLines)
+            {
+                if (line.TrimStart().StartsWith("PrivateKey", StringComparison.OrdinalIgnoreCase))
+                {
+                    var privateKey = line.Split('=')[1].Trim();
+                    // Gerar chave pública a partir da privada
+                    return await GetPublicKeyFromPrivateKeyAsync(privateKey);
+                }
+            }
+        }
+
+        // Se não encontrou, retornar placeholder (será gerado quando criar interface)
+        _logger?.LogWarning("Chave pública do servidor não encontrada para interface {InterfaceName}", interfaceName);
+        return "SERVER_PUBLIC_KEY_PLACEHOLDER";
+    }
+
+    private async Task<string> GetPublicKeyFromPrivateKeyAsync(string privateKey)
+    {
+        try
+        {
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = $"-c \"echo '{privateKey}' | /usr/bin/wg pubkey\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            var publicKey = (await process.StandardOutput.ReadToEndAsync()).Trim();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode == 0 && !string.IsNullOrEmpty(publicKey))
+            {
+                return publicKey;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao gerar chave pública a partir da privada");
+        }
+
         return "SERVER_PUBLIC_KEY_PLACEHOLDER";
     }
 

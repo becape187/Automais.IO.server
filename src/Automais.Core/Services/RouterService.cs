@@ -82,17 +82,19 @@ public class RouterService : IRouterService
 
         var created = await _routerRepository.CreateAsync(router, cancellationToken);
         
-        // Se tem VpnNetworkId e allowedNetworks, provisionar WireGuard automaticamente
-        if (dto.VpnNetworkId.HasValue && dto.AllowedNetworks != null && dto.AllowedNetworks.Any())
+        // Se tem VpnNetworkId, provisionar WireGuard automaticamente (allowedNetworks é opcional)
+        if (dto.VpnNetworkId.HasValue)
         {
             try
             {
                 if (_wireGuardServerService != null)
                 {
+                    // allowedNetworks pode ser null ou vazio - o peer será criado apenas com o IP do router
+                    var allowedNetworks = dto.AllowedNetworks ?? Enumerable.Empty<string>();
                     await _wireGuardServerService.ProvisionRouterAsync(
                         created.Id,
                         dto.VpnNetworkId.Value,
-                        dto.AllowedNetworks,
+                        allowedNetworks,
                         cancellationToken);
                 }
             }

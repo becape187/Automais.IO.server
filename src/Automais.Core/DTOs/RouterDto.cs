@@ -14,6 +14,7 @@ public class RouterDto
     public string? Model { get; set; }
     public string? FirmwareVersion { get; set; }
     public string? RouterOsApiUrl { get; set; }
+    public string? RouterOsApiUsername { get; set; }
     public Guid? VpnNetworkId { get; set; }
     public RouterStatus Status { get; set; }
     public DateTime? LastSeenAt { get; set; }
@@ -21,6 +22,10 @@ public class RouterDto
     public string? Description { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+    /// <summary>
+    /// Redes permitidas para o router via VPN (ex: ["10.0.1.0/24", "192.168.100.0/24"])
+    /// </summary>
+    public IEnumerable<string>? AllowedNetworks { get; set; }
 }
 
 /// <summary>

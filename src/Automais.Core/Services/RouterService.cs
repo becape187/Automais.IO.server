@@ -13,17 +13,20 @@ public class RouterService : IRouterService
     private readonly ITenantRepository _tenantRepository;
     private readonly IRouterOsClient _routerOsClient;
     private readonly IWireGuardServerService? _wireGuardServerService;
+    private readonly IRouterAllowedNetworkRepository? _allowedNetworkRepository;
 
     public RouterService(
         IRouterRepository routerRepository,
         ITenantRepository tenantRepository,
         IRouterOsClient routerOsClient,
-        IWireGuardServerService? wireGuardServerService = null)
+        IWireGuardServerService? wireGuardServerService = null,
+        IRouterAllowedNetworkRepository? allowedNetworkRepository = null)
     {
         _routerRepository = routerRepository;
         _tenantRepository = tenantRepository;
         _routerOsClient = routerOsClient;
         _wireGuardServerService = wireGuardServerService;
+        _allowedNetworkRepository = allowedNetworkRepository;
     }
 
     public async Task<IEnumerable<RouterDto>> GetByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default)
@@ -33,7 +36,12 @@ public class RouterService : IRouterService
             // Buscar routers diretamente sem verificar tenant primeiro
             // Isso evita JOINs desnecessários que podem causar problemas com snake_case
             var routers = await _routerRepository.GetByTenantIdAsync(tenantId, cancellationToken);
-            return routers.Select(MapToDto);
+            var result = new List<RouterDto>();
+            foreach (var router in routers)
+            {
+                result.Add(await MapToDtoAsync(router, cancellationToken));
+            }
+            return result;
         }
         catch (Exception ex)
         {
@@ -44,7 +52,9 @@ public class RouterService : IRouterService
     public async Task<RouterDto?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var router = await _routerRepository.GetByIdAsync(id, cancellationToken);
-        return router == null ? null : MapToDto(router);
+        if (router == null) return null;
+        
+        return await MapToDtoAsync(router, cancellationToken);
     }
 
     public async Task<RouterDto> CreateAsync(Guid tenantId, CreateRouterDto dto, CancellationToken cancellationToken = default)
@@ -114,7 +124,7 @@ public class RouterService : IRouterService
             }
         }
         
-        return MapToDto(created);
+        return await MapToDtoAsync(created, cancellationToken);
     }
 
     public async Task<RouterDto> UpdateAsync(Guid id, UpdateRouterDto dto, CancellationToken cancellationToken = default)
@@ -180,7 +190,7 @@ public class RouterService : IRouterService
         router.UpdatedAt = DateTime.UtcNow;
 
         var updated = await _routerRepository.UpdateAsync(router, cancellationToken);
-        return MapToDto(updated);
+        return await MapToDtoAsync(updated, cancellationToken);
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
@@ -226,7 +236,7 @@ public class RouterService : IRouterService
         }
 
         var updated = await _routerRepository.UpdateAsync(router, cancellationToken);
-        return MapToDto(updated);
+        return await MapToDtoAsync(updated, cancellationToken);
     }
 
     private async Task CreateAutomaisApiUserAsync(Router router, CancellationToken cancellationToken)
@@ -272,8 +282,24 @@ public class RouterService : IRouterService
             .Select(s => s[random.Next(s.Length)]).ToArray());
     }
 
-    private static RouterDto MapToDto(Router router)
+    private async Task<RouterDto> MapToDtoAsync(Router router, CancellationToken cancellationToken = default)
     {
+        // Buscar redes permitidas se houver repositório disponível
+        IEnumerable<string>? allowedNetworks = null;
+        if (_allowedNetworkRepository != null)
+        {
+            try
+            {
+                var networks = await _allowedNetworkRepository.GetByRouterIdAsync(router.Id, cancellationToken);
+                allowedNetworks = networks.Select(n => n.NetworkCidr).ToList();
+            }
+            catch
+            {
+                // Se falhar, deixa como null
+                allowedNetworks = null;
+            }
+        }
+
         return new RouterDto
         {
             Id = router.Id,
@@ -283,13 +309,15 @@ public class RouterService : IRouterService
             Model = router.Model,
             FirmwareVersion = router.FirmwareVersion,
             RouterOsApiUrl = router.RouterOsApiUrl,
+            RouterOsApiUsername = router.RouterOsApiUsername,
             VpnNetworkId = router.VpnNetworkId,
             Status = router.Status,
             LastSeenAt = router.LastSeenAt,
             HardwareInfo = router.HardwareInfo,
             Description = router.Description,
             CreatedAt = router.CreatedAt,
-            UpdatedAt = router.UpdatedAt
+            UpdatedAt = router.UpdatedAt,
+            AllowedNetworks = allowedNetworks
         };
     }
 }

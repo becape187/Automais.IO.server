@@ -133,8 +133,13 @@ if (!string.IsNullOrWhiteSpace(rootCertSetting))
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
 {
     options.UseNpgsql(npgBuilder.ConnectionString, opt =>
-        opt.EnableRetryOnFailure());
-    options.UseSnakeCaseNamingConvention();
+    {
+        opt.EnableRetryOnFailure();
+        opt.MapEnumToText();
+    });
+    // REMOVIDO: UseSnakeCaseNamingConvention() 
+    // O banco usa PascalCase (Id, Name, TenantId), não snake_case
+    // options.UseSnakeCaseNamingConvention();
 });
 
 // ChirpStack Client (gRPC)

@@ -2,7 +2,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.Extensions.Configuration;
 using System.IO;
-using EFCore.NamingConventions;
 
 namespace Automais.Infrastructure.Data;
 
@@ -64,8 +63,14 @@ public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Applicatio
         connectionString = ReplaceEnvironmentVariables(connectionString);
 
         var optionsBuilder = new DbContextOptionsBuilder<ApplicationDbContext>();
-        optionsBuilder.UseNpgsql(connectionString, opt => opt.EnableRetryOnFailure());
-        optionsBuilder.UseSnakeCaseNamingConvention();
+        optionsBuilder.UseNpgsql(connectionString, opt =>
+        {
+            opt.EnableRetryOnFailure();
+            opt.MapEnumToText();
+        });
+        // REMOVIDO: UseSnakeCaseNamingConvention() 
+        // O banco usa PascalCase (Id, Name, TenantId), não snake_case
+        // optionsBuilder.UseSnakeCaseNamingConvention();
 
         return new ApplicationDbContext(optionsBuilder.Options);
     }

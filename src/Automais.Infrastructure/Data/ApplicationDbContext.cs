@@ -30,8 +30,7 @@ public class ApplicationDbContext : DbContext
     {
         base.OnModelCreating(modelBuilder);
         
-        // Configurar tabela de migrations para usar snake_case
-        // Isso garante compatibilidade com EFCore.NamingConventions
+        // Configurar schema padrão
         if (Database.ProviderName == "Npgsql.EntityFrameworkCore.PostgreSQL")
         {
             modelBuilder.HasDefaultSchema("public");
@@ -312,7 +311,7 @@ public class ApplicationDbContext : DbContext
 
             entity.HasIndex(e => e.SerialNumber)
                 .IsUnique()
-                .HasFilter("\"serial_number\" IS NOT NULL");
+                .HasFilter("\"SerialNumber\" IS NOT NULL");
 
             entity.Property(e => e.Model)
                 .HasMaxLength(50);

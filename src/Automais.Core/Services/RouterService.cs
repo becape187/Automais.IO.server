@@ -30,14 +30,8 @@ public class RouterService : IRouterService
     {
         try
         {
-            // Verificar se o tenant existe (opcional, mas ajuda a dar feedback melhor)
-            var tenant = await _tenantRepository.GetByIdAsync(tenantId, cancellationToken);
-            if (tenant == null)
-            {
-                // Retorna lista vazia ao invés de lançar exceção se o tenant não existir
-                return Enumerable.Empty<RouterDto>();
-            }
-
+            // Buscar routers diretamente sem verificar tenant primeiro
+            // Isso evita JOINs desnecessários que podem causar problemas com snake_case
             var routers = await _routerRepository.GetByTenantIdAsync(tenantId, cancellationToken);
             return routers.Select(MapToDto);
         }

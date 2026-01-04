@@ -36,6 +36,7 @@ public class RouterRepository : IRouterRepository
     public async Task<IEnumerable<Router>> GetByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default)
     {
         return await _context.Set<Router>()
+            .AsNoTracking()
             .Where(r => r.TenantId == tenantId)
             .OrderBy(r => r.Name)
             .ToListAsync(cancellationToken);

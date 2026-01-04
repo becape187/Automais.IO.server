@@ -74,5 +74,13 @@ public class RouterWireGuardPeerRepository : IRouterWireGuardPeerRepository
             await _context.SaveChangesAsync(cancellationToken);
         }
     }
+
+    public async Task<IEnumerable<string>> GetAllocatedIpsByNetworkAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default)
+    {
+        return await _context.Set<RouterWireGuardPeer>()
+            .Where(p => p.VpnNetworkId == vpnNetworkId && !string.IsNullOrEmpty(p.AllowedIps))
+            .Select(p => p.AllowedIps)
+            .ToListAsync(cancellationToken);
+    }
 }
 

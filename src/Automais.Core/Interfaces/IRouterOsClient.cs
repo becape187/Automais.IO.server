@@ -10,6 +10,11 @@ public interface IRouterOsClient
     Task<string> ExportConfigAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default);
     Task ImportConfigAsync(string apiUrl, string username, string password, string configContent, CancellationToken cancellationToken = default);
     Task<List<RouterOsLog>> GetConfigLogsAsync(string apiUrl, string username, string password, DateTime? since = null, CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Cria um usuário no RouterOS com senha forte
+    /// </summary>
+    Task CreateUserAsync(string apiUrl, string username, string password, string newUsername, string newPassword, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

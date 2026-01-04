@@ -44,8 +44,19 @@ public class Router
     
     /// <summary>
     /// Senha da API RouterOS (criptografada no banco)
+    /// Usada inicialmente para testar conexão e criar usuário automais-io-api
     /// </summary>
     public string? RouterOsApiPassword { get; set; }
+    
+    /// <summary>
+    /// Senha do usuário automais-io-api criado automaticamente (texto plano inicialmente)
+    /// </summary>
+    public string? AutomaisApiPassword { get; set; }
+    
+    /// <summary>
+    /// Indica se o usuário automais-io-api foi criado no router
+    /// </summary>
+    public bool AutomaisApiUserCreated { get; set; } = false;
     
     /// <summary>
     /// ID da rede VPN WireGuard associada

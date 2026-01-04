@@ -22,12 +22,20 @@ public class ApplicationDbContext : DbContext
     public DbSet<VpnNetworkMembership> VpnNetworkMemberships => Set<VpnNetworkMembership>();
     public DbSet<Router> Routers => Set<Router>();
     public DbSet<RouterWireGuardPeer> RouterWireGuardPeers => Set<RouterWireGuardPeer>();
+    public DbSet<RouterAllowedNetwork> RouterAllowedNetworks => Set<RouterAllowedNetwork>();
     public DbSet<RouterConfigLog> RouterConfigLogs => Set<RouterConfigLog>();
     public DbSet<RouterBackup> RouterBackups => Set<RouterBackup>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+        
+        // Configurar tabela de migrations para usar snake_case
+        // Isso garante compatibilidade com EFCore.NamingConventions
+        if (Database.ProviderName == "Npgsql.EntityFrameworkCore.PostgreSQL")
+        {
+            modelBuilder.HasDefaultSchema("public");
+        }
 
         // Configuração de Tenant
         modelBuilder.Entity<Tenant>(entity =>
@@ -384,6 +392,34 @@ public class ApplicationDbContext : DbContext
 
             entity.HasIndex(e => e.RouterId);
             entity.HasIndex(e => e.VpnNetworkId);
+        });
+
+        // Configuração de RouterAllowedNetwork
+        modelBuilder.Entity<RouterAllowedNetwork>(entity =>
+        {
+            entity.ToTable("router_allowed_networks");
+
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.RouterId).IsRequired();
+            entity.Property(e => e.NetworkCidr)
+                .IsRequired()
+                .HasMaxLength(50);
+
+            entity.Property(e => e.Description)
+                .HasMaxLength(255);
+
+            entity.Property(e => e.CreatedAt).IsRequired();
+
+            entity.HasOne(e => e.Router)
+                .WithMany()
+                .HasForeignKey(e => e.RouterId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(e => new { e.RouterId, e.NetworkCidr })
+                .IsUnique();
+
+            entity.HasIndex(e => e.RouterId);
         });
 
         // Configuração de RouterConfigLog

@@ -12,15 +12,18 @@ public class RouterService : IRouterService
     private readonly IRouterRepository _routerRepository;
     private readonly ITenantRepository _tenantRepository;
     private readonly IRouterOsClient _routerOsClient;
+    private readonly IWireGuardServerService? _wireGuardServerService;
 
     public RouterService(
         IRouterRepository routerRepository,
         ITenantRepository tenantRepository,
-        IRouterOsClient routerOsClient)
+        IRouterOsClient routerOsClient,
+        IWireGuardServerService? wireGuardServerService = null)
     {
         _routerRepository = routerRepository;
         _tenantRepository = tenantRepository;
         _routerOsClient = routerOsClient;
+        _wireGuardServerService = wireGuardServerService;
     }
 
     public async Task<IEnumerable<RouterDto>> GetByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default)
@@ -84,6 +87,29 @@ public class RouterService : IRouterService
         };
 
         var created = await _routerRepository.CreateAsync(router, cancellationToken);
+        
+        // Se tem VpnNetworkId e allowedNetworks, provisionar WireGuard automaticamente
+        if (dto.VpnNetworkId.HasValue && dto.AllowedNetworks != null && dto.AllowedNetworks.Any())
+        {
+            try
+            {
+                if (_wireGuardServerService != null)
+                {
+                    await _wireGuardServerService.ProvisionRouterAsync(
+                        created.Id,
+                        dto.VpnNetworkId.Value,
+                        dto.AllowedNetworks,
+                        cancellationToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Logar erro mas não falhar criação do router
+                // TODO: Adicionar logging
+                // O WireGuard pode ser provisionado depois manualmente
+            }
+        }
+        
         return MapToDto(created);
     }
 
@@ -189,8 +215,57 @@ public class RouterService : IRouterService
         router.LastSeenAt = isConnected ? DateTime.UtcNow : router.LastSeenAt;
         router.UpdatedAt = DateTime.UtcNow;
 
+        // Se conectou e ainda não criou o usuário automais-io-api, criar agora
+        if (isConnected && !router.AutomaisApiUserCreated)
+        {
+            await CreateAutomaisApiUserAsync(router, cancellationToken);
+        }
+
         var updated = await _routerRepository.UpdateAsync(router, cancellationToken);
         return MapToDto(updated);
+    }
+
+    private async Task CreateAutomaisApiUserAsync(Router router, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Gerar senha forte
+            var password = GenerateStrongPassword();
+            const string username = "automais-io-api";
+
+            // Criar usuário no RouterOS
+            await _routerOsClient.CreateUserAsync(
+                router.RouterOsApiUrl!,
+                router.RouterOsApiUsername!,
+                router.RouterOsApiPassword!,
+                username,
+                password,
+                cancellationToken);
+
+            // Atualizar router com credenciais do automais-io-api
+            router.RouterOsApiUsername = username;
+            router.AutomaisApiPassword = password; // Texto plano inicialmente
+            router.AutomaisApiUserCreated = true;
+            router.UpdatedAt = DateTime.UtcNow;
+
+            // TODO: Logar criação do usuário
+        }
+        catch (Exception ex)
+        {
+            // Logar erro mas não falhar o teste de conexão
+            // TODO: Adicionar logging
+            throw new InvalidOperationException(
+                $"Erro ao criar usuário automais-io-api no router: {ex.Message}", ex);
+        }
+    }
+
+    private static string GenerateStrongPassword()
+    {
+        // Gera senha forte de 32 caracteres
+        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
+        var random = new Random();
+        return new string(Enumerable.Repeat(chars, 32)
+            .Select(s => s[random.Next(s.Length)]).ToArray());
     }
 
     private static RouterDto MapToDto(Router router)

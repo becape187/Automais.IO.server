@@ -14,5 +14,10 @@ public interface IRouterWireGuardPeerRepository
     Task<RouterWireGuardPeer> CreateAsync(RouterWireGuardPeer peer, CancellationToken cancellationToken = default);
     Task<RouterWireGuardPeer> UpdateAsync(RouterWireGuardPeer peer, CancellationToken cancellationToken = default);
     Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Busca todos os IPs alocados em uma rede VPN (para alocação de novos IPs)
+    /// </summary>
+    Task<IEnumerable<string>> GetAllocatedIpsByNetworkAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default);
 }
 

@@ -16,8 +16,58 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("Connection string 'DefaultConnection' não encontrada.");
 
-// Substituir variáveis de ambiente no formato ${VAR}
-var baseConnectionString = ReplaceEnvironmentVariables(connectionString);
+Console.WriteLine($"🔍 Connection string original: {MaskConnectionString(connectionString)}");
+
+// Verificar quais variáveis foram encontradas ANTES da substituição
+var envVars = new[] { "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD" };
+Console.WriteLine("🔍 Verificando variáveis de ambiente:");
+var missingVars = new List<string>();
+foreach (var varName in envVars)
+{
+    var value = Environment.GetEnvironmentVariable(varName);
+    if (string.IsNullOrEmpty(value))
+    {
+        Console.WriteLine($"  ❌ {varName}: NÃO DEFINIDA");
+        missingVars.Add(varName);
+    }
+    else
+    {
+        Console.WriteLine($"  ✅ {varName}: {(varName.Contains("PASSWORD") ? "***" : value)}");
+    }
+}
+
+// Se todas as variáveis estão definidas, fazer a substituição
+// Caso contrário, tentar construir a connection string diretamente
+string baseConnectionString;
+if (missingVars.Any())
+{
+    Console.WriteLine($"⚠️ Variáveis faltando: {string.Join(", ", missingVars)}");
+    Console.WriteLine("🔧 Tentando construir connection string diretamente das variáveis...");
+    
+    // Tentar construir a connection string diretamente
+    var host = Environment.GetEnvironmentVariable("DB_HOST") ?? "";
+    var port = Environment.GetEnvironmentVariable("DB_PORT") ?? "5432";
+    var database = Environment.GetEnvironmentVariable("DB_NAME") ?? "";
+    var username = Environment.GetEnvironmentVariable("DB_USER") ?? "";
+    var password = Environment.GetEnvironmentVariable("DB_PASSWORD") ?? "";
+    
+    if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(database) || 
+        string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+    {
+        throw new InvalidOperationException(
+            $"Não foi possível construir a connection string. Variáveis faltando: {string.Join(", ", missingVars)}. " +
+            $"Verifique se as variáveis estão configuradas no systemd service.");
+    }
+    
+    baseConnectionString = $"Host={host};Port={port};Database={database};Username={username};Password={password};Ssl Mode=Require";
+    Console.WriteLine($"✅ Connection string construída diretamente: {MaskConnectionString(baseConnectionString)}");
+}
+else
+{
+    // Substituir variáveis de ambiente no formato ${VAR}
+    baseConnectionString = ReplaceEnvironmentVariables(connectionString);
+    Console.WriteLine($"✅ Connection string após substituição: {MaskConnectionString(baseConnectionString)}");
+}
 
 // Validar se a connection string tem host
 if (string.IsNullOrWhiteSpace(baseConnectionString))
@@ -135,6 +185,7 @@ builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
 builder.Services.AddScoped<IVpnNetworkRepository, VpnNetworkRepository>();
 builder.Services.AddScoped<IRouterRepository, RouterRepository>();
 builder.Services.AddScoped<IRouterWireGuardPeerRepository, RouterWireGuardPeerRepository>();
+builder.Services.AddScoped<IRouterAllowedNetworkRepository, RouterAllowedNetworkRepository>();
 builder.Services.AddScoped<IRouterConfigLogRepository, RouterConfigLogRepository>();
 builder.Services.AddScoped<IRouterBackupRepository, RouterBackupRepository>();
 
@@ -147,6 +198,7 @@ builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IVpnNetworkService, VpnNetworkService>();
 builder.Services.AddScoped<IRouterService, RouterService>();
 builder.Services.AddScoped<IRouterWireGuardService, RouterWireGuardService>();
+builder.Services.AddScoped<IWireGuardServerService, Automais.Infrastructure.WireGuard.WireGuardServerService>();
 
 // RouterBackupService com caminho de storage configurável
 var backupStoragePath = builder.Configuration["Backup:StoragePath"] ?? "/backups/routers";
@@ -296,18 +348,40 @@ static string ReplaceEnvironmentVariables(string input)
 
     var result = input;
     var startIndex = 0;
+    var missingVars = new List<string>();
 
     while ((startIndex = result.IndexOf("${", startIndex)) != -1)
     {
         var endIndex = result.IndexOf("}", startIndex);
         if (endIndex == -1)
+        {
+            Console.WriteLine($"⚠️ Variável de ambiente malformada: {result.Substring(startIndex)}");
             break;
+        }
 
         var varName = result.Substring(startIndex + 2, endIndex - startIndex - 2);
-        var envValue = Environment.GetEnvironmentVariable(varName) ?? string.Empty;
+        var envValue = Environment.GetEnvironmentVariable(varName);
+        
+        if (string.IsNullOrEmpty(envValue))
+        {
+            Console.WriteLine($"❌ Variável de ambiente '{varName}' não encontrada!");
+            missingVars.Add(varName);
+            envValue = string.Empty; // Substitui por string vazia para não quebrar o formato
+        }
+        else
+        {
+            Console.WriteLine($"✅ Variável '{varName}' encontrada (valor mascarado)");
+        }
         
         result = result.Substring(0, startIndex) + envValue + result.Substring(endIndex + 1);
         startIndex += envValue.Length;
+    }
+
+    if (missingVars.Any())
+    {
+        throw new InvalidOperationException(
+            $"Variáveis de ambiente não encontradas: {string.Join(", ", missingVars)}. " +
+            "Verifique se as variáveis estão configuradas no systemd service ou no ambiente.");
     }
 
     return result;

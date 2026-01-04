@@ -1,6 +1,7 @@
 using Automais.Core.DTOs;
 using Automais.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using System.Text;
 
 namespace Automais.Api.Controllers;
 
@@ -92,6 +93,34 @@ public class RouterWireGuardController : ControllerBase
         {
             _logger.LogWarning(ex, "Peer WireGuard não encontrado");
             return NotFound(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Download da configuração WireGuard do router (arquivo .conf)
+    /// </summary>
+    [HttpGet("routers/{routerId:guid}/wireguard/config/download")]
+    public async Task<IActionResult> DownloadConfig(
+        Guid routerId,
+        [FromServices] IWireGuardServerService wireGuardServerService,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var config = await wireGuardServerService.GetConfigAsync(routerId, cancellationToken);
+            
+            var bytes = Encoding.UTF8.GetBytes(config.ConfigContent);
+            return File(bytes, "text/plain", config.FileName);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Router não encontrado para download de config");
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Erro ao gerar configuração WireGuard");
+            return BadRequest(new { message = ex.Message });
         }
     }
 

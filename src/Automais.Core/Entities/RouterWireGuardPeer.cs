@@ -63,6 +63,12 @@ public class RouterWireGuardPeer
     /// </summary>
     public bool IsEnabled { get; set; } = true;
     
+    /// <summary>
+    /// Conteúdo completo do arquivo de configuração WireGuard (.conf)
+    /// Guardado no banco para download a qualquer momento
+    /// </summary>
+    public string? ConfigContent { get; set; }
+    
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
     

@@ -36,6 +36,10 @@ public class CreateRouterDto
     public string? RouterOsApiPassword { get; set; }
     public Guid? VpnNetworkId { get; set; }
     public string? Description { get; set; }
+    /// <summary>
+    /// Redes permitidas para o router via WireGuard (ex: ["10.0.1.0/24", "192.168.100.0/24"])
+    /// </summary>
+    public IEnumerable<string>? AllowedNetworks { get; set; }
 }
 
 /// <summary>

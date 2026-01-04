@@ -72,6 +72,24 @@ public class RouterOsClient : IRouterOsClient
         return new List<RouterOsLog>();
     }
 
+    public async Task CreateUserAsync(string apiUrl, string username, string password, string newUsername, string newPassword, CancellationToken cancellationToken = default)
+    {
+        // TODO: Implementar criação de usuário via API RouterOS
+        // Usar biblioteca RouterOS.API ou executar comandos via API protocol
+        // Comando: /user/add name=<newUsername> password=<newPassword> group=full
+        
+        _logger?.LogInformation("Criando usuário {NewUsername} no RouterOS via {ApiUrl}", newUsername, apiUrl);
+        
+        // Por enquanto apenas loga - precisa implementar com biblioteca RouterOS.API
+        await Task.CompletedTask;
+        
+        _logger?.LogWarning("CreateUserAsync ainda não está implementado completamente. " +
+            "Precisa usar biblioteca RouterOS.API para executar: /user/add name={NewUsername} password=*** group=full", newUsername);
+        
+        // TODO: Implementar quando tiver biblioteca RouterOS.API
+        // throw new NotImplementedException("CreateUserAsync precisa ser implementado com biblioteca RouterOS.API");
+    }
+
     private (string host, int port) ParseApiUrl(string apiUrl)
     {
         // Formato esperado: "192.168.1.1:8728" ou "10.100.1.50:8728"

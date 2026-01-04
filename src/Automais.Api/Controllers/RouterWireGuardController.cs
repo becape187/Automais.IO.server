@@ -109,18 +109,43 @@ public class RouterWireGuardController : ControllerBase
         {
             var config = await wireGuardServerService.GetConfigAsync(routerId, cancellationToken);
             
+            if (string.IsNullOrEmpty(config.ConfigContent))
+            {
+                _logger.LogWarning("Configuração VPN vazia para router {RouterId}", routerId);
+                return BadRequest(new { 
+                    message = "Configuração VPN não disponível. O router precisa ter uma rede VPN configurada.",
+                    detail = "Certifique-se de que o router foi criado com uma rede VPN (vpnNetworkId)."
+                });
+            }
+            
             var bytes = Encoding.UTF8.GetBytes(config.ConfigContent);
             return File(bytes, "text/plain", config.FileName);
         }
         catch (KeyNotFoundException ex)
         {
-            _logger.LogWarning(ex, "Router não encontrado para download de config");
-            return NotFound(new { message = ex.Message });
+            _logger.LogWarning(ex, "Router não encontrado para download de config: {RouterId}", routerId);
+            return NotFound(new { 
+                message = "Router não encontrado",
+                detail = ex.Message 
+            });
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Erro ao gerar configuração WireGuard");
-            return BadRequest(new { message = ex.Message });
+            _logger.LogWarning(ex, "Erro ao gerar configuração VPN para router {RouterId}: {Error}", routerId, ex.Message);
+            return BadRequest(new { 
+                message = "Erro ao gerar configuração VPN",
+                detail = ex.Message,
+                hint = "Certifique-se de que o router possui uma rede VPN configurada e que o peer foi criado corretamente."
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro inesperado ao baixar configuração VPN para router {RouterId}", routerId);
+            return StatusCode(500, new { 
+                message = "Erro interno do servidor ao baixar configuração VPN",
+                detail = ex.Message,
+                innerException = ex.InnerException?.Message
+            });
         }
     }
 

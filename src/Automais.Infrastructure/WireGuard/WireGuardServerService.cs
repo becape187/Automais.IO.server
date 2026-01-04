@@ -270,15 +270,28 @@ public class WireGuardServerService : IWireGuardServerService
     {
         var router = await _routerRepository.GetByIdAsync(routerId, cancellationToken);
         if (router == null)
+        {
+            _logger?.LogWarning("Router {RouterId} não encontrado ao tentar obter configuração VPN", routerId);
             throw new KeyNotFoundException($"Router com ID {routerId} não encontrado.");
+        }
 
         var peer = (await _peerRepository.GetByRouterIdAsync(routerId, cancellationToken)).FirstOrDefault();
         if (peer == null)
-            throw new InvalidOperationException("Router não possui peer WireGuard configurado.");
+        {
+            _logger?.LogWarning("Router {RouterId} não possui peer VPN configurado. VpnNetworkId: {VpnNetworkId}", 
+                routerId, router.VpnNetworkId);
+            throw new InvalidOperationException(
+                $"Router não possui peer VPN configurado. " +
+                $"Certifique-se de que o router foi criado com uma rede VPN (vpnNetworkId) e que o peer foi provisionado corretamente.");
+        }
+
+        _logger?.LogDebug("Obtendo configuração VPN para router {RouterId}. Peer ID: {PeerId}, ConfigContent vazio: {IsEmpty}", 
+            routerId, peer.Id, string.IsNullOrEmpty(peer.ConfigContent));
 
         // Se já tem config salva, retorna
         if (!string.IsNullOrEmpty(peer.ConfigContent))
         {
+            _logger?.LogDebug("Retornando configuração VPN salva para router {RouterId}", routerId);
             return new RouterWireGuardConfigDto
             {
                 ConfigContent = peer.ConfigContent,
@@ -287,6 +300,7 @@ public class WireGuardServerService : IWireGuardServerService
         }
 
         // Senão, gera e salva
+        _logger?.LogInformation("Gerando nova configuração VPN para router {RouterId}", routerId);
         return await GenerateAndSaveConfigAsync(routerId, cancellationToken);
     }
 
@@ -614,14 +628,52 @@ public class WireGuardServerService : IWireGuardServerService
         CancellationToken cancellationToken = default)
     {
         var sb = new StringBuilder();
+        
+        // Seção [Interface] - Configuração do cliente (router)
+        sb.AppendLine("# Configuração VPN para Router");
+        sb.AppendLine($"# Router: {router.Name}");
+        sb.AppendLine($"# Gerado em: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+        sb.AppendLine();
         sb.AppendLine("[Interface]");
         sb.AppendLine($"PrivateKey = {peer.PrivateKey}");
         sb.AppendLine($"Address = {peer.AllowedIps}");
         sb.AppendLine();
+        
+        // Seção [Peer] - Configuração do servidor
         sb.AppendLine("[Peer]");
         var serverPublicKey = await GetServerPublicKeyAsync(peer.VpnNetworkId, cancellationToken);
+        
+        if (serverPublicKey == "SERVER_PUBLIC_KEY_PLACEHOLDER")
+        {
+            _logger?.LogWarning("Chave pública do servidor não encontrada para VpnNetwork {VpnNetworkId}. Usando placeholder.", peer.VpnNetworkId);
+            // Tentar buscar do arquivo de configuração do servidor
+            var interfaceName = GetInterfaceName(peer.VpnNetworkId);
+            var configPath = $"/etc/wireguard/{interfaceName}.conf";
+            if (File.Exists(configPath))
+            {
+                var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
+                foreach (var line in configLines)
+                {
+                    if (line.TrimStart().StartsWith("PrivateKey", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var privateKey = line.Split('=')[1].Trim();
+                        serverPublicKey = await GetPublicKeyFromPrivateKeyAsync(privateKey);
+                        break;
+                    }
+                }
+            }
+        }
+        
         sb.AppendLine($"PublicKey = {serverPublicKey}");
-        if (!string.IsNullOrWhiteSpace(peer.Endpoint))
+        
+        // Endpoint é obrigatório
+        if (string.IsNullOrWhiteSpace(peer.Endpoint))
+        {
+            var endpoint = GetServerPublicIp();
+            sb.AppendLine($"Endpoint = {endpoint}:{peer.ListenPort ?? 51820}");
+            _logger?.LogWarning("Endpoint não configurado para peer {PeerId}, usando padrão: {Endpoint}", peer.Id, endpoint);
+        }
+        else
         {
             sb.AppendLine($"Endpoint = {peer.Endpoint}:{peer.ListenPort ?? 51820}");
         }
@@ -635,7 +687,10 @@ public class WireGuardServerService : IWireGuardServerService
         sb.AppendLine($"AllowedIPs = {string.Join(", ", allNetworks)}");
         sb.AppendLine("PersistentKeepalive = 25");
 
-        return sb.ToString();
+        var configContent = sb.ToString();
+        _logger?.LogDebug("Configuração VPN gerada para router {RouterId}. Tamanho: {Size} bytes", router.Id, configContent.Length);
+        
+        return configContent;
     }
 
     private async Task<string> GetServerPublicKeyAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default)

@@ -294,26 +294,69 @@ try
         logger.LogInformation("📊 Command Timeout: {CommandTimeout}s", npgBuilder.CommandTimeout);
         logger.LogInformation("📊 Connection Timeout: {Timeout}s", npgBuilder.Timeout);
         
-        var canConnect = await dbContext.Database.CanConnectAsync();
-        
-        if (canConnect)
+        // Tentar conectar e capturar erros detalhados
+        try
         {
-            logger.LogInformation("✅ Conexão com banco de dados estabelecida com sucesso!");
+            logger.LogInformation("🔄 Tentando CanConnectAsync()...");
+            var canConnect = await dbContext.Database.CanConnectAsync();
+            logger.LogInformation("🔄 CanConnectAsync() retornou: {Result}", canConnect);
             
-            // Testar uma query simples
-            try
+            if (canConnect)
             {
-                var tenantCount = await dbContext.Set<Tenant>().CountAsync();
-                logger.LogInformation("✅ Query de teste executada com sucesso! Total de tenants: {Count}", tenantCount);
+                logger.LogInformation("✅ Conexão com banco de dados estabelecida com sucesso!");
+                
+                // Testar uma query simples
+                try
+                {
+                    logger.LogInformation("🔄 Executando query de teste (COUNT tenants)...");
+                    var tenantCount = await dbContext.Set<Tenant>().CountAsync();
+                    logger.LogInformation("✅ Query de teste executada com sucesso! Total de tenants: {Count}", tenantCount);
+                }
+                catch (Exception queryEx)
+                {
+                    logger.LogWarning(queryEx, "⚠️ Conexão OK, mas query de teste falhou: {Error}", queryEx.Message);
+                    logger.LogWarning("⚠️ Stack Trace: {StackTrace}", queryEx.StackTrace);
+                }
             }
-            catch (Exception queryEx)
+            else
             {
-                logger.LogWarning(queryEx, "⚠️ Conexão OK, mas query de teste falhou: {Error}", queryEx.Message);
+                logger.LogError("❌ CanConnectAsync retornou false - não foi possível conectar ao banco de dados!");
+                
+                // Tentar uma conexão direta para ver o erro real
+                logger.LogInformation("🔄 Tentando conexão direta com ExecuteSqlRawAsync('SELECT 1')...");
+                try
+                {
+                    await dbContext.Database.ExecuteSqlRawAsync("SELECT 1");
+                    logger.LogInformation("✅ ExecuteSqlRawAsync funcionou mesmo com CanConnectAsync=false");
+                }
+                catch (Exception directEx)
+                {
+                    logger.LogError(directEx, "❌ Erro ao executar query direta: {Error}", directEx.Message);
+                    logger.LogError("❌ Tipo de exceção: {ExceptionType}", directEx.GetType().Name);
+                    if (directEx.InnerException != null)
+                    {
+                        logger.LogError("❌ Inner Exception: {InnerException}", directEx.InnerException.Message);
+                        logger.LogError("❌ Inner Exception Type: {InnerExceptionType}", directEx.InnerException.GetType().Name);
+                        logger.LogError("❌ Inner Stack Trace: {InnerStackTrace}", directEx.InnerException.StackTrace);
+                    }
+                    logger.LogError("❌ Stack Trace completo: {StackTrace}", directEx.StackTrace);
+                }
             }
         }
-        else
+        catch (Npgsql.NpgsqlException npgEx)
         {
-            logger.LogError("❌ Não foi possível conectar ao banco de dados!");
+            logger.LogError(npgEx, "❌ Erro Npgsql ao testar conexão: {Error}", npgEx.Message);
+            logger.LogError("❌ SQL State: {SqlState}", npgEx.SqlState);
+            logger.LogError("❌ Code: {Code}", npgEx.ErrorCode);
+            logger.LogError("❌ Inner Exception: {InnerException}", npgEx.InnerException?.Message);
+            logger.LogError("❌ Stack Trace: {StackTrace}", npgEx.StackTrace);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "❌ Erro inesperado ao testar conexão: {Error}", ex.Message);
+            logger.LogError("❌ Tipo de exceção: {ExceptionType}", ex.GetType().Name);
+            logger.LogError("❌ Inner Exception: {InnerException}", ex.InnerException?.Message);
+            logger.LogError("❌ Stack Trace: {StackTrace}", ex.StackTrace);
         }
     }
 }

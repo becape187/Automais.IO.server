@@ -119,6 +119,9 @@ catch (ArgumentException ex)
         $"Connection string (parcial): {MaskConnectionString(baseConnectionString)}", ex);
 }
 
+string? finalCertPath = null;
+
+// Tentar primeiro o caminho configurado
 if (!string.IsNullOrWhiteSpace(rootCertSetting))
 {
     var rootCertPath = Path.IsPathRooted(rootCertSetting)
@@ -127,15 +130,59 @@ if (!string.IsNullOrWhiteSpace(rootCertSetting))
 
     if (File.Exists(rootCertPath))
     {
-        Console.WriteLine($"🔐 Certificado raiz encontrado em {rootCertPath}. Validando SSL.");
-        npgBuilder.RootCertificate = rootCertPath;
-        npgBuilder.TrustServerCertificate = false;
-        npgBuilder.SslMode = SslMode.VerifyFull;
+        finalCertPath = rootCertPath;
     }
-    else
+}
+
+// Se não encontrou, tentar no diretório pai (fixo no servidor)
+if (string.IsNullOrEmpty(finalCertPath))
+{
+    var parentDirCertPath = Path.Combine(
+        Path.GetDirectoryName(builder.Environment.ContentRootPath) ?? string.Empty,
+        "ca-certificate.crt");
+    
+    if (File.Exists(parentDirCertPath))
     {
-        Console.WriteLine($"⚠️ Certificado raiz não encontrado em {rootCertPath}. Usando TrustServerCertificate=true.");
+        finalCertPath = parentDirCertPath;
+        Console.WriteLine($"🔍 Certificado encontrado no diretório pai: {finalCertPath}");
     }
+}
+
+// Se ainda não encontrou, tentar caminho absoluto fixo (Linux)
+if (string.IsNullOrEmpty(finalCertPath))
+{
+    var fixedPath = "/root/automais.io/ca-certificate.crt";
+    if (File.Exists(fixedPath))
+    {
+        finalCertPath = fixedPath;
+        Console.WriteLine($"🔍 Certificado encontrado no caminho fixo: {finalCertPath}");
+    }
+}
+
+// Aplicar certificado se encontrado
+if (!string.IsNullOrEmpty(finalCertPath))
+{
+    Console.WriteLine($"🔐 Certificado raiz encontrado em {finalCertPath}. Validando SSL.");
+    npgBuilder.RootCertificate = finalCertPath;
+    npgBuilder.TrustServerCertificate = false;
+    npgBuilder.SslMode = SslMode.VerifyFull;
+}
+else
+{
+    Console.WriteLine($"⚠️ Certificado raiz não encontrado em nenhum local. Usando TrustServerCertificate=true.");
+    Console.WriteLine($"⚠️ Locais verificados:");
+    if (!string.IsNullOrWhiteSpace(rootCertSetting))
+    {
+        var rootCertPath = Path.IsPathRooted(rootCertSetting)
+            ? rootCertSetting
+            : Path.Combine(builder.Environment.ContentRootPath, rootCertSetting);
+        Console.WriteLine($"   - {rootCertPath}");
+    }
+    var parentDirCertPath = Path.Combine(
+        Path.GetDirectoryName(builder.Environment.ContentRootPath) ?? string.Empty,
+        "ca-certificate.crt");
+    Console.WriteLine($"   - {parentDirCertPath}");
+    Console.WriteLine($"   - /root/automais.io/ca-certificate.crt");
 }
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>

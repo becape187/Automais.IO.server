@@ -19,12 +19,12 @@
     <ProjectReference Include="..\Automais.Infrastructure\Automais.Infrastructure.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
+  <!-- <ItemGroup>
     <None Include="..\Automais.Infrastructure\ca-certificate.crt">
       <Link>ca-certificate.crt</Link>
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-  </ItemGroup>
+  </ItemGroup> -->
 
 </Project>
 

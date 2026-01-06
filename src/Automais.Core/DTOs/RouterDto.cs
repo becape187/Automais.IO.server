@@ -45,6 +45,11 @@ public class CreateRouterDto
     /// Redes permitidas para o router via WireGuard (ex: ["10.0.1.0/24", "192.168.100.0/24"])
     /// </summary>
     public IEnumerable<string>? AllowedNetworks { get; set; }
+    /// <summary>
+    /// IP manual para o router na VPN (ex: "10.222.111.5/24"). Se não especificado, será alocado automaticamente.
+    /// O IP .1 é sempre reservado para o servidor.
+    /// </summary>
+    public string? VpnIp { get; set; }
 }
 
 /// <summary>

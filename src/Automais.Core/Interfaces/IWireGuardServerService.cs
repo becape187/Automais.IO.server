@@ -16,6 +16,7 @@ public interface IWireGuardServerService
         Guid routerId,
         Guid vpnNetworkId,
         IEnumerable<string> allowedNetworks,
+        string? manualIp = null,
         CancellationToken cancellationToken = default);
     
     /// <summary>
@@ -58,9 +59,12 @@ public interface IWireGuardServerService
     
     /// <summary>
     /// Aloca um IP disponível na rede VPN
+    /// Se manualIp for especificado, valida e reserva esse IP.
+    /// Caso contrário, encontra o próximo IP disponível (começando do .2, pois .1 é reservado para servidor)
     /// </summary>
     Task<string> AllocateVpnIpAsync(
         Guid vpnNetworkId,
+        string? manualIp = null,
         CancellationToken cancellationToken = default);
     
     /// <summary>

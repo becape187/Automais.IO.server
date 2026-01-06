@@ -261,8 +261,15 @@ builder.Services.AddScoped<IApplicationService, ApplicationService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IVpnNetworkService, VpnNetworkService>();
 builder.Services.AddScoped<IRouterService, RouterService>();
-builder.Services.AddScoped<IRouterWireGuardService, RouterWireGuardService>();
 builder.Services.AddScoped<IWireGuardServerService, WireGuardServerService>();
+builder.Services.AddScoped<IRouterWireGuardService>(sp =>
+{
+    var peerRepo = sp.GetRequiredService<IRouterWireGuardPeerRepository>();
+    var routerRepo = sp.GetRequiredService<IRouterRepository>();
+    var vpnNetworkRepo = sp.GetRequiredService<IVpnNetworkRepository>();
+    var wireGuardServerService = sp.GetRequiredService<IWireGuardServerService>();
+    return new RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardServerService);
+});
 
 // Serviço de sincronização do WireGuard (executa na inicialização)
 builder.Services.AddHostedService<WireGuardSyncService>();

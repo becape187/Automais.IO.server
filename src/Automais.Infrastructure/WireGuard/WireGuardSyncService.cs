@@ -57,6 +57,9 @@ public class WireGuardSyncService : IHostedService
             // 5. Sincronizar configurações do banco para arquivos
             await SyncWireGuardConfigurationsAsync(cancellationToken);
             
+            // 6. Salvar regras de firewall/NAT permanentemente
+            await SaveFirewallRulesAsync(cancellationToken);
+            
             _logger.LogInformation("✅ Sincronização do WireGuard concluída com sucesso");
         }
         catch (Exception ex)
@@ -151,6 +154,9 @@ public class WireGuardSyncService : IHostedService
 
         // Salvar configuração persistente
         await SaveWireGuardConfigAsync(interfaceName, cancellationToken);
+        
+        // Ativar interface se não estiver ativa
+        await ActivateInterfaceIfNeededAsync(interfaceName, cancellationToken);
         
         _logger.LogInformation("VpnNetwork {VpnNetworkId} sincronizada com sucesso", vpnNetworkId);
     }
@@ -549,6 +555,164 @@ public class WireGuardSyncService : IHostedService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Erro ao executar comando iptables: {Rule}", rule);
+        }
+    }
+
+    /// <summary>
+    /// Ativa a interface WireGuard se não estiver ativa
+    /// </summary>
+    private async Task ActivateInterfaceIfNeededAsync(string interfaceName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Verificar se a interface está ativa
+            var checkProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = $"show {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            var output = await checkProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await checkProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            // Se a interface não existe ou não está ativa, ativar
+            if (checkProcess.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+            {
+                _logger.LogInformation("Ativando interface WireGuard {InterfaceName}...", interfaceName);
+                
+                var upProcess = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "/usr/bin/wg-quick",
+                        Arguments = $"up {interfaceName}",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                upProcess.Start();
+                var upOutput = await upProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+                var upError = await upProcess.StandardError.ReadToEndAsync(cancellationToken);
+                await upProcess.WaitForExitAsync(cancellationToken);
+
+                if (upProcess.ExitCode == 0)
+                {
+                    _logger.LogInformation("Interface WireGuard {InterfaceName} ativada com sucesso", interfaceName);
+                }
+                else
+                {
+                    _logger.LogWarning("Erro ao ativar interface WireGuard {InterfaceName}: {Error}", interfaceName, upError);
+                }
+            }
+            else
+            {
+                _logger.LogDebug("Interface WireGuard {InterfaceName} já está ativa", interfaceName);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao verificar/ativar interface WireGuard {InterfaceName}", interfaceName);
+        }
+    }
+
+    /// <summary>
+    /// Salva regras de firewall/NAT permanentemente usando iptables-save ou netfilter-persistent
+    /// </summary>
+    private async Task SaveFirewallRulesAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Tentar usar netfilter-persistent (recomendado)
+            var persistentProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            persistentProcess.Start();
+            var output = await persistentProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await persistentProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await persistentProcess.WaitForExitAsync(cancellationToken);
+
+            if (persistentProcess.ExitCode == 0)
+            {
+                _logger.LogInformation("Regras de firewall/NAT salvas permanentemente");
+            }
+            else
+            {
+                // Tentar método alternativo: salvar manualmente
+                await SaveIptablesRulesManuallyAsync(cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Erro ao salvar regras de firewall. Regras podem não persistir após reinicialização.");
+            _logger.LogWarning("Considere instalar: sudo apt install iptables-persistent");
+        }
+    }
+
+    /// <summary>
+    /// Salva regras iptables manualmente
+    /// </summary>
+    private async Task SaveIptablesRulesManuallyAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Criar diretório se não existir
+            var rulesDir = "/etc/iptables";
+            if (!System.IO.Directory.Exists(rulesDir))
+            {
+                System.IO.Directory.CreateDirectory(rulesDir);
+            }
+
+            // Salvar regras
+            var saveProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"iptables-save > /etc/iptables/rules.v4\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            saveProcess.Start();
+            var error = await saveProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await saveProcess.WaitForExitAsync(cancellationToken);
+
+            if (saveProcess.ExitCode == 0)
+            {
+                _logger.LogInformation("Regras iptables salvas em /etc/iptables/rules.v4");
+            }
+            else
+            {
+                _logger.LogWarning("Não foi possível salvar regras iptables automaticamente. Erro: {Error}", error);
+                _logger.LogWarning("Para persistir regras após reinicialização, execute manualmente:");
+                _logger.LogWarning("  sudo apt install iptables-persistent");
+                _logger.LogWarning("  sudo netfilter-persistent save");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao salvar regras iptables manualmente");
         }
     }
 }

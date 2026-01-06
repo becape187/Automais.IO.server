@@ -14,15 +14,18 @@ public class RouterWireGuardService : IRouterWireGuardService
     private readonly IRouterWireGuardPeerRepository _peerRepository;
     private readonly IRouterRepository _routerRepository;
     private readonly IVpnNetworkRepository _vpnNetworkRepository;
+    private readonly IWireGuardServerService? _wireGuardServerService;
 
     public RouterWireGuardService(
         IRouterWireGuardPeerRepository peerRepository,
         IRouterRepository routerRepository,
-        IVpnNetworkRepository vpnNetworkRepository)
+        IVpnNetworkRepository vpnNetworkRepository,
+        IWireGuardServerService? wireGuardServerService = null)
     {
         _peerRepository = peerRepository;
         _routerRepository = routerRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
+        _wireGuardServerService = wireGuardServerService;
     }
 
     public async Task<IEnumerable<RouterWireGuardPeerDto>> GetByRouterIdAsync(Guid routerId, CancellationToken cancellationToken = default)
@@ -58,6 +61,35 @@ public class RouterWireGuardService : IRouterWireGuardService
             throw new InvalidOperationException($"Já existe um peer WireGuard para este router e rede VPN.");
         }
 
+        // Validar e alocar IP (se AllowedIps foi fornecido, validar; senão, alocar automaticamente)
+        string routerIp;
+        if (!string.IsNullOrWhiteSpace(dto.AllowedIps))
+        {
+            // IP manual foi especificado - validar
+            if (_wireGuardServerService != null)
+            {
+                // Usar o método de alocação para validar o IP manual
+                routerIp = await _wireGuardServerService.AllocateVpnIpAsync(dto.VpnNetworkId, dto.AllowedIps, cancellationToken);
+            }
+            else
+            {
+                // Se não tiver acesso ao serviço, apenas usar o IP fornecido (sem validação)
+                routerIp = dto.AllowedIps;
+            }
+        }
+        else
+        {
+            // IP não especificado - alocar automaticamente
+            if (_wireGuardServerService != null)
+            {
+                routerIp = await _wireGuardServerService.AllocateVpnIpAsync(dto.VpnNetworkId, null, cancellationToken);
+            }
+            else
+            {
+                throw new InvalidOperationException("Não é possível alocar IP automaticamente. Especifique AllowedIps ou configure IWireGuardServerService.");
+            }
+        }
+
         // Gerar par de chaves WireGuard
         var (publicKey, privateKey) = GenerateWireGuardKeys();
 
@@ -68,7 +100,7 @@ public class RouterWireGuardService : IRouterWireGuardService
             VpnNetworkId = dto.VpnNetworkId,
             PublicKey = publicKey,
             PrivateKey = privateKey, // TODO: Criptografar antes de salvar
-            AllowedIps = dto.AllowedIps,
+            AllowedIps = routerIp, // Usar IP validado/alocado
             Endpoint = dto.Endpoint,
             ListenPort = dto.ListenPort,
             IsEnabled = true,

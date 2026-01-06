@@ -112,6 +112,7 @@ public class RouterService : IRouterService
                         created.Id,
                         dto.VpnNetworkId.Value,
                         allowedNetworks,
+                        dto.VpnIp, // IP manual opcional
                         cancellationToken);
                 }
             }

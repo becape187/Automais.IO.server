@@ -40,6 +40,7 @@ public class WireGuardServerService : IWireGuardServerService
         Guid routerId,
         Guid vpnNetworkId,
         IEnumerable<string> allowedNetworks,
+        string? manualIp = null,
         CancellationToken cancellationToken = default)
     {
         var router = await _routerRepository.GetByIdAsync(routerId, cancellationToken);
@@ -58,8 +59,8 @@ public class WireGuardServerService : IWireGuardServerService
         // Gerar par de chaves WireGuard
         var (publicKey, privateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
 
-        // Alocar IP da VPN
-        var routerIp = await AllocateVpnIpAsync(vpnNetworkId, cancellationToken);
+        // Alocar IP da VPN (manual ou automático)
+        var routerIp = await AllocateVpnIpAsync(vpnNetworkId, manualIp, cancellationToken);
 
         // Construir allowed-ips (IP do router + redes permitidas opcionais)
         var allowedIps = new List<string> { routerIp };
@@ -306,6 +307,7 @@ public class WireGuardServerService : IWireGuardServerService
 
     public async Task<string> AllocateVpnIpAsync(
         Guid vpnNetworkId,
+        string? manualIp = null,
         CancellationToken cancellationToken = default)
     {
         var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
@@ -315,13 +317,100 @@ public class WireGuardServerService : IWireGuardServerService
         // Parse do CIDR (ex: "10.100.1.0/24")
         var (networkIp, prefixLength) = ParseCidr(vpnNetwork.Cidr);
 
+        // Se IP manual foi especificado, validar e usar
+        if (!string.IsNullOrWhiteSpace(manualIp))
+        {
+            return await ValidateAndReserveManualIpAsync(vpnNetworkId, manualIp, networkIp, prefixLength, cancellationToken);
+        }
+
         // Buscar IPs já alocados
         var allocatedIps = await _peerRepository.GetAllocatedIpsByNetworkAsync(vpnNetworkId, cancellationToken);
 
-        // Encontrar próximo IP disponível
+        // Encontrar próximo IP disponível (começando do .2, pois .1 é reservado para servidor)
         var availableIp = FindNextAvailableIp(networkIp, prefixLength, allocatedIps);
 
         return $"{availableIp}/{prefixLength}";
+    }
+
+    /// <summary>
+    /// Valida e reserva um IP manual especificado pelo usuário
+    /// </summary>
+    private async Task<string> ValidateAndReserveManualIpAsync(
+        Guid vpnNetworkId,
+        string manualIp,
+        IPAddress networkIp,
+        int prefixLength,
+        CancellationToken cancellationToken)
+    {
+        // Parse do IP manual
+        var manualIpParts = manualIp.Split('/');
+        if (manualIpParts.Length != 2)
+            throw new ArgumentException($"IP manual inválido. Use o formato: IP/PREFIX (ex: 10.222.111.5/24)");
+
+        if (!IPAddress.TryParse(manualIpParts[0], out var requestedIp))
+            throw new ArgumentException($"IP manual inválido: {manualIpParts[0]}");
+
+        if (!int.TryParse(manualIpParts[1], out var requestedPrefix) || requestedPrefix != prefixLength)
+            throw new ArgumentException($"Prefix do IP manual ({requestedPrefix}) deve ser igual ao prefix da rede VPN ({prefixLength})");
+
+        // Verificar se o IP está dentro da rede VPN
+        var networkBytes = networkIp.GetAddressBytes();
+        var requestedBytes = requestedIp.GetAddressBytes();
+        
+        // Verificar se os primeiros prefixLength bits são iguais
+        var networkBits = prefixLength;
+        var networkByte = networkBits / 8;
+        var networkBit = networkBits % 8;
+
+        bool isInNetwork = true;
+        for (int i = 0; i < networkByte; i++)
+        {
+            if (networkBytes[i] != requestedBytes[i])
+            {
+                isInNetwork = false;
+                break;
+            }
+        }
+        
+        if (networkByte < 4 && networkBit > 0)
+        {
+            var mask = (byte)(0xFF << (8 - networkBit));
+            if ((networkBytes[networkByte] & mask) != (requestedBytes[networkByte] & mask))
+            {
+                isInNetwork = false;
+            }
+        }
+
+        if (!isInNetwork)
+            throw new ArgumentException($"IP manual {manualIp} não está na rede VPN {networkIp}/{prefixLength}");
+
+        // Verificar se é o IP .1 (reservado para servidor)
+        var serverIp = new IPAddress(new byte[]
+        {
+            networkBytes[0],
+            networkBytes[1],
+            networkBytes[2],
+            (byte)(networkBytes[3] + 1)
+        });
+
+        if (requestedIp.Equals(serverIp))
+            throw new ArgumentException($"IP {manualIp} é reservado para o servidor VPN (.1)");
+
+        // Verificar se o IP já está alocado
+        var allocatedIps = await _peerRepository.GetAllocatedIpsByNetworkAsync(vpnNetworkId, cancellationToken);
+        var allocated = new HashSet<string>();
+        foreach (var ip in allocatedIps)
+        {
+            var ipPart = ip.Split('/')[0];
+            allocated.Add(ipPart);
+        }
+
+        if (allocated.Contains(requestedIp.ToString()))
+            throw new InvalidOperationException($"IP {manualIp} já está alocado para outro router nesta rede VPN");
+
+        // IP válido e disponível
+        _logger?.LogInformation("IP manual {ManualIp} validado e reservado para router", manualIp);
+        return manualIp;
     }
 
     // ===== Métodos Privados =====
@@ -1179,8 +1268,19 @@ public class WireGuardServerService : IWireGuardServerService
         var hostBits = 32 - prefixLength;
         var maxHosts = (int)Math.Pow(2, hostBits) - 2; // -2 para network e broadcast
 
-        // Começar do .1 (primeiro IP utilizável)
-        for (int i = 1; i <= maxHosts && i <= 254; i++)
+        // Reservar .1 para o servidor, começar do .2
+        // Adicionar .1 aos IPs alocados para garantir que não seja usado
+        var serverIp = new IPAddress(new byte[]
+        {
+            networkBytes[0],
+            networkBytes[1],
+            networkBytes[2],
+            (byte)(networkBytes[3] + 1)
+        });
+        allocated.Add(serverIp.ToString());
+
+        // Começar do .2 (primeiro IP utilizável para clientes, .1 é servidor)
+        for (int i = 2; i <= maxHosts && i <= 254; i++)
         {
             var testIp = new IPAddress(new byte[]
             {

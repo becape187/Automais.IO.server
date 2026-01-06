@@ -263,6 +263,9 @@ builder.Services.AddScoped<IRouterService, RouterService>();
 builder.Services.AddScoped<IRouterWireGuardService, RouterWireGuardService>();
 builder.Services.AddScoped<IWireGuardServerService, Automais.Infrastructure.WireGuard.WireGuardServerService>();
 
+// Serviço de sincronização do WireGuard (executa na inicialização)
+builder.Services.AddHostedService<Automais.Infrastructure.WireGuard.WireGuardSyncService>();
+
 // RouterBackupService com caminho de storage configurável
 var backupStoragePath = builder.Configuration["Backup:StoragePath"] ?? "/backups/routers";
 builder.Services.AddScoped<IRouterBackupService>(sp =>

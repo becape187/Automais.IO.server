@@ -75,6 +75,15 @@ public class RouterWireGuardPeerRepository : IRouterWireGuardPeerRepository
         }
     }
 
+    public async Task<IEnumerable<RouterWireGuardPeer>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        return await _context.Set<RouterWireGuardPeer>()
+            .Include(p => p.Router)
+            .Include(p => p.VpnNetwork)
+            .OrderBy(p => p.CreatedAt)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<IEnumerable<string>> GetAllocatedIpsByNetworkAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default)
     {
         return await _context.Set<RouterWireGuardPeer>()

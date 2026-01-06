@@ -403,11 +403,24 @@ public class WireGuardServerService : IWireGuardServerService
         }
     }
 
-    private string GetInterfaceName(Guid vpnNetworkId)
+    public string GetInterfaceName(Guid vpnNetworkId)
     {
         // TODO: Buscar nome da interface da VpnNetwork ou usar padrão
         // Por enquanto usa padrão baseado no ID
         return $"wg-{vpnNetworkId.ToString("N")[..8]}";
+    }
+
+    /// <summary>
+    /// Garante que a interface WireGuard existe para uma VpnNetwork
+    /// </summary>
+    public async Task EnsureInterfaceForVpnNetworkAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default)
+    {
+        var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
+        if (vpnNetwork == null)
+            throw new KeyNotFoundException($"Rede VPN com ID {vpnNetworkId} não encontrada.");
+
+        var interfaceName = GetInterfaceName(vpnNetworkId);
+        await EnsureInterfaceExistsAsync(interfaceName, vpnNetwork, cancellationToken);
     }
 
     /// <summary>
@@ -532,6 +545,12 @@ public class WireGuardServerService : IWireGuardServerService
 
         _logger?.LogInformation("Arquivo de configuração WireGuard criado: {ConfigPath}", configPath);
         
+        // Habilitar encaminhamento IP (ip_forward)
+        await EnableIpForwardingAsync(cancellationToken);
+        
+        // Configurar regras de firewall
+        await ConfigureFirewallRulesAsync(interfaceName, vpnNetwork.Cidr, cancellationToken);
+        
         // Tentar ativar a interface usando wg-quick
         try
         {
@@ -573,6 +592,310 @@ public class WireGuardServerService : IWireGuardServerService
         // TODO: Obter IP público do servidor da configuração
         // Por enquanto retorna placeholder
         return "srv01.automais.io"; // ou IP público real
+    }
+
+    /// <summary>
+    /// Habilita o encaminhamento IP (ip_forward) necessário para o WireGuard
+    /// </summary>
+    private async Task EnableIpForwardingAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Verificar se já está habilitado
+            var checkProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"cat /proc/sys/net/ipv4/ip_forward\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            var currentValue = (await checkProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            if (currentValue == "1")
+            {
+                _logger?.LogDebug("Encaminhamento IP já está habilitado");
+                return;
+            }
+
+            // Habilitar temporariamente (até reiniciar)
+            var enableProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"echo 1 > /proc/sys/net/ipv4/ip_forward\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            enableProcess.Start();
+            await enableProcess.WaitForExitAsync(cancellationToken);
+
+            if (enableProcess.ExitCode == 0)
+            {
+                _logger?.LogInformation("Encaminhamento IP habilitado temporariamente");
+            }
+
+            // Habilitar permanentemente via sysctl
+            var sysctlProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && sysctl -p\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            sysctlProcess.Start();
+            var sysctlOutput = await sysctlProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var sysctlError = await sysctlProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await sysctlProcess.WaitForExitAsync(cancellationToken);
+
+            if (sysctlProcess.ExitCode == 0)
+            {
+                _logger?.LogInformation("Encaminhamento IP habilitado permanentemente");
+            }
+            else
+            {
+                _logger?.LogWarning("Erro ao habilitar encaminhamento IP permanentemente: {Error}", sysctlError);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao habilitar encaminhamento IP");
+            // Não lança exceção - pode ser configurado manualmente
+        }
+    }
+
+    /// <summary>
+    /// Configura regras de firewall (iptables) para o WireGuard
+    /// </summary>
+    private async Task ConfigureFirewallRulesAsync(string interfaceName, string vpnCidr, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Verificar se iptables está disponível
+            var checkProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/sbin/iptables",
+                    Arguments = "--version",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            if (checkProcess.ExitCode != 0)
+            {
+                _logger?.LogWarning("iptables não encontrado. Regras de firewall não serão configuradas automaticamente.");
+                return;
+            }
+
+            // Permitir tráfego na porta WireGuard (UDP 51820)
+            await ExecuteIptablesCommandAsync($"-A INPUT -p udp --dport 51820 -j ACCEPT", cancellationToken);
+
+            // Permitir tráfego na interface WireGuard
+            await ExecuteIptablesCommandAsync($"-A INPUT -i {interfaceName} -j ACCEPT", cancellationToken);
+            await ExecuteIptablesCommandAsync($"-A OUTPUT -o {interfaceName} -j ACCEPT", cancellationToken);
+
+            // Permitir forwarding para a rede VPN
+            await ExecuteIptablesCommandAsync($"-A FORWARD -i {interfaceName} -j ACCEPT", cancellationToken);
+            await ExecuteIptablesCommandAsync($"-A FORWARD -o {interfaceName} -j ACCEPT", cancellationToken);
+
+            // NAT para tráfego da VPN (masquerade)
+            // Isso permite que clientes VPN acessem a internet através do servidor
+            // Detectar interface de rede principal (eth0, ens3, enp0s3, etc.)
+            var mainInterface = await GetMainNetworkInterfaceAsync(cancellationToken);
+            
+            if (!string.IsNullOrEmpty(mainInterface))
+            {
+                var natProcess = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "/bin/bash",
+                        Arguments = $"-c \"iptables -t nat -C POSTROUTING -s {vpnCidr} -o {mainInterface} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s {vpnCidr} -o {mainInterface} -j MASQUERADE\"",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                natProcess.Start();
+                var natOutput = await natProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+                var natError = await natProcess.StandardError.ReadToEndAsync(cancellationToken);
+                await natProcess.WaitForExitAsync(cancellationToken);
+
+                if (natProcess.ExitCode == 0)
+                {
+                    _logger?.LogInformation("Regras de firewall e NAT configuradas para interface {InterfaceName} (via {MainInterface})", interfaceName, mainInterface);
+                }
+                else
+                {
+                    _logger?.LogWarning("Erro ao configurar NAT: {Error}", natError);
+                }
+            }
+            else
+            {
+                _logger?.LogWarning("Não foi possível detectar interface de rede principal. NAT não configurado.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao configurar regras de firewall");
+            // Não lança exceção - pode ser configurado manualmente
+        }
+    }
+
+    /// <summary>
+    /// Detecta a interface de rede principal (eth0, ens3, etc.)
+    /// </summary>
+    private async Task<string> GetMainNetworkInterfaceAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"ip route | grep default | awk '{print $5}' | head -1\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            process.Start();
+            var interfaceName = (await process.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            await process.WaitForExitAsync(cancellationToken);
+
+            if (!string.IsNullOrEmpty(interfaceName) && process.ExitCode == 0)
+            {
+                _logger?.LogDebug("Interface de rede principal detectada: {InterfaceName}", interfaceName);
+                return interfaceName;
+            }
+
+            // Fallback: tentar interfaces comuns
+            var commonInterfaces = new[] { "eth0", "ens3", "enp0s3", "enp0s8" };
+            foreach (var iface in commonInterfaces)
+            {
+                var checkProcess = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "/bin/bash",
+                        Arguments = $"-c \"ip link show {iface} >/dev/null 2>&1\"",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                checkProcess.Start();
+                await checkProcess.WaitForExitAsync(cancellationToken);
+                
+                if (checkProcess.ExitCode == 0)
+                {
+                    _logger?.LogDebug("Interface de rede detectada (fallback): {InterfaceName}", iface);
+                    return iface;
+                }
+            }
+
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao detectar interface de rede principal");
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Executa comando iptables (verifica se já existe antes de adicionar)
+    /// </summary>
+    private async Task ExecuteIptablesCommandAsync(string rule, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Extrair a ação (INPUT, OUTPUT, FORWARD) e a regra
+            var parts = rule.Split(new[] { ' ' }, 2);
+            if (parts.Length < 2) return;
+
+            var action = parts[0]; // -A INPUT, -A OUTPUT, etc.
+            var rulePart = parts[1];
+
+            // Verificar se a regra já existe
+            var checkProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = $"-c \"iptables -C {rulePart} 2>/dev/null\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            // Se a regra não existe (exit code != 0), adicionar
+            if (checkProcess.ExitCode != 0)
+            {
+                var addProcess = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "/usr/sbin/iptables",
+                        Arguments = $"{action} {rulePart}",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                addProcess.Start();
+                var output = await addProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+                var error = await addProcess.StandardError.ReadToEndAsync(cancellationToken);
+                await addProcess.WaitForExitAsync(cancellationToken);
+
+                if (addProcess.ExitCode == 0)
+                {
+                    _logger?.LogDebug("Regra iptables adicionada: {Rule}", rule);
+                }
+                else
+                {
+                    _logger?.LogWarning("Erro ao adicionar regra iptables {Rule}: {Error}", rule, error);
+                }
+            }
+            else
+            {
+                _logger?.LogDebug("Regra iptables já existe: {Rule}", rule);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao executar comando iptables: {Rule}", rule);
+        }
     }
 
     private async Task<(string publicKey, string privateKey)> GenerateWireGuardKeysAsync(CancellationToken cancellationToken = default)

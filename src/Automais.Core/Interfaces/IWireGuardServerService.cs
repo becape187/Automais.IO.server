@@ -62,5 +62,13 @@ public interface IWireGuardServerService
     Task<string> AllocateVpnIpAsync(
         Guid vpnNetworkId,
         CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Garante que a interface WireGuard existe para uma VpnNetwork
+    /// Cria o arquivo de configuração se necessário
+    /// </summary>
+    Task EnsureInterfaceForVpnNetworkAsync(
+        Guid vpnNetworkId,
+        CancellationToken cancellationToken = default);
 }
 

@@ -5,6 +5,7 @@ using Automais.Infrastructure.ChirpStack;
 using Automais.Infrastructure.Data;
 using Automais.Infrastructure.Repositories;
 using Automais.Infrastructure.RouterOS;
+using Automais.Infrastructure.WireGuard;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -261,10 +262,10 @@ builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IVpnNetworkService, VpnNetworkService>();
 builder.Services.AddScoped<IRouterService, RouterService>();
 builder.Services.AddScoped<IRouterWireGuardService, RouterWireGuardService>();
-builder.Services.AddScoped<IWireGuardServerService, Automais.Infrastructure.WireGuard.WireGuardServerService>();
+builder.Services.AddScoped<IWireGuardServerService, WireGuardServerService>();
 
 // Serviço de sincronização do WireGuard (executa na inicialização)
-builder.Services.AddHostedService<Automais.Infrastructure.WireGuard.WireGuardSyncService>();
+builder.Services.AddHostedService<WireGuardSyncService>();
 
 // RouterBackupService com caminho de storage configurável
 var backupStoragePath = builder.Configuration["Backup:StoragePath"] ?? "/backups/routers";

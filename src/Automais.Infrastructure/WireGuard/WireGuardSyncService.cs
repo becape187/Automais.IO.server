@@ -107,20 +107,17 @@ public class WireGuardSyncService : IHostedService
         // Buscar todos os peers desta VpnNetwork
         var peers = await _peerRepository.GetByVpnNetworkIdAsync(vpnNetworkId, cancellationToken);
         
+        // Garantir que a interface existe (independente de ter peers ou não)
+        var interfaceName = GetInterfaceName(vpnNetworkId);
+        await EnsureInterfaceExistsAsync(interfaceName, vpnNetwork, cancellationToken);
+        
         if (!peers.Any())
         {
-            _logger.LogDebug("VpnNetwork {VpnNetworkId} não possui peers. Apenas garantindo que a interface existe.", vpnNetworkId);
-            // Ainda assim, garantir que a interface existe (pode ter sido criada mas sem peers ainda)
-            var interfaceName = GetInterfaceName(vpnNetworkId);
-            await EnsureInterfaceExistsAsync(interfaceName, vpnNetwork, cancellationToken);
+            _logger.LogDebug("VpnNetwork {VpnNetworkId} não possui peers. Interface garantida.", vpnNetworkId);
             return;
         }
 
         _logger.LogInformation("Sincronizando {PeerCount} peers da VpnNetwork {VpnNetworkId}", peers.Count(), vpnNetworkId);
-
-        // Garantir que a interface existe
-        var interfaceName = GetInterfaceName(vpnNetworkId);
-        await EnsureInterfaceExistsAsync(interfaceName, vpnNetwork, cancellationToken);
 
         // Sincronizar cada peer
         foreach (var peer in peers)

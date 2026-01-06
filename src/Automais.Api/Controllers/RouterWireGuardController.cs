@@ -119,7 +119,23 @@ public class RouterWireGuardController : ControllerBase
             }
             
             var bytes = Encoding.UTF8.GetBytes(config.ConfigContent);
-            return File(bytes, "text/plain", config.FileName);
+            
+            // Sanitizar o nome do arquivo removendo caracteres problemáticos
+            var fileName = config.FileName
+                .Replace("\"", "")
+                .Replace("\\", "")
+                .Replace("/", "")
+                .Replace(":", "")
+                .Replace("*", "")
+                .Replace("?", "")
+                .Replace("<", "")
+                .Replace(">", "")
+                .Replace("|", "");
+            
+            // Configurar o header Content-Disposition manualmente para evitar codificação duplicada
+            Response.Headers.Append("Content-Disposition", $"attachment; filename=\"{fileName}\"");
+            
+            return new FileContentResult(bytes, "text/plain");
         }
         catch (KeyNotFoundException ex)
         {

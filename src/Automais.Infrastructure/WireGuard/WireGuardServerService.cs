@@ -420,15 +420,54 @@ public class WireGuardServerService : IWireGuardServerService
     {
         var configPath = $"/etc/wireguard/{interfaceName}.conf";
         
-        // Se o arquivo já existe, não precisa criar
+        // Se o arquivo já existe, verificar se a chave pública está salva
         if (File.Exists(configPath))
         {
             _logger?.LogDebug("Interface WireGuard {InterfaceName} já existe", interfaceName);
+            
+            // Se a chave pública não está salva, tentar ler do arquivo e salvar
+            if (string.IsNullOrEmpty(vpnNetwork.ServerPublicKey))
+            {
+                try
+                {
+                    var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
+                    foreach (var line in configLines)
+                    {
+                        if (line.TrimStart().StartsWith("PrivateKey", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var privateKey = line.Split('=')[1].Trim();
+                            var recoveredPublicKey = await GetPublicKeyFromPrivateKeyAsync(privateKey);
+                            if (recoveredPublicKey != "SERVER_PUBLIC_KEY_PLACEHOLDER")
+                            {
+                                vpnNetwork.ServerPublicKey = recoveredPublicKey;
+                                vpnNetwork.UpdatedAt = DateTime.UtcNow;
+                                await _vpnNetworkRepository.UpdateAsync(vpnNetwork, cancellationToken);
+                                _logger?.LogInformation("Chave pública do servidor recuperada e salva na VpnNetwork {VpnNetworkId}", vpnNetwork.Id);
+                            }
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "Erro ao tentar recuperar chave pública do arquivo de configuração existente");
+                }
+            }
+            
             return;
         }
 
         // Gerar chaves do servidor para esta interface
         var (serverPublicKey, serverPrivateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
+        
+        // Salvar a chave pública na VpnNetwork se ainda não estiver salva
+        if (string.IsNullOrEmpty(vpnNetwork.ServerPublicKey))
+        {
+            vpnNetwork.ServerPublicKey = serverPublicKey;
+            vpnNetwork.UpdatedAt = DateTime.UtcNow;
+            await _vpnNetworkRepository.UpdateAsync(vpnNetwork, cancellationToken);
+            _logger?.LogInformation("Chave pública do servidor salva na VpnNetwork {VpnNetworkId}", vpnNetwork.Id);
+        }
         
         // Parse do CIDR para obter o IP da interface do servidor
         var (networkIp, prefixLength) = ParseCidr(vpnNetwork.Cidr);
@@ -700,8 +739,14 @@ public class WireGuardServerService : IWireGuardServerService
         if (vpnNetwork == null)
             throw new KeyNotFoundException("Rede VPN não encontrada.");
 
-        // TODO: Adicionar campo ServerPublicKey na entidade VpnNetwork
-        // Por enquanto, buscar do arquivo de configuração da interface
+        // Primeiro, tentar usar a chave salva na VpnNetwork
+        if (!string.IsNullOrEmpty(vpnNetwork.ServerPublicKey))
+        {
+            _logger?.LogDebug("Chave pública do servidor encontrada na VpnNetwork {VpnNetworkId}", vpnNetworkId);
+            return vpnNetwork.ServerPublicKey;
+        }
+
+        // Se não estiver salva, tentar buscar do arquivo de configuração da interface
         var interfaceName = GetInterfaceName(vpnNetworkId);
         var configPath = $"/etc/wireguard/{interfaceName}.conf";
         
@@ -714,7 +759,16 @@ public class WireGuardServerService : IWireGuardServerService
                 {
                     var privateKey = line.Split('=')[1].Trim();
                     // Gerar chave pública a partir da privada
-                    return await GetPublicKeyFromPrivateKeyAsync(privateKey);
+                    var publicKey = await GetPublicKeyFromPrivateKeyAsync(privateKey);
+                    if (publicKey != "SERVER_PUBLIC_KEY_PLACEHOLDER")
+                    {
+                        // Salvar a chave na VpnNetwork para uso futuro
+                        vpnNetwork.ServerPublicKey = publicKey;
+                        vpnNetwork.UpdatedAt = DateTime.UtcNow;
+                        await _vpnNetworkRepository.UpdateAsync(vpnNetwork, cancellationToken);
+                        _logger?.LogInformation("Chave pública do servidor recuperada do arquivo e salva na VpnNetwork {VpnNetworkId}", vpnNetworkId);
+                        return publicKey;
+                    }
                 }
             }
         }

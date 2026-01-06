@@ -13,6 +13,7 @@ public class VpnNetwork
     public string? Description { get; set; }
     public bool IsDefault { get; set; }
     public string? DnsServers { get; set; }
+    public string? ServerPublicKey { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 

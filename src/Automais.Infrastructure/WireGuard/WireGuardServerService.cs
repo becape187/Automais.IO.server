@@ -545,10 +545,7 @@ public class WireGuardServerService : IWireGuardServerService
 
         _logger?.LogInformation("Arquivo de configuração WireGuard criado: {ConfigPath}", configPath);
         
-        // Habilitar encaminhamento IP (ip_forward)
-        await EnableIpForwardingAsync(cancellationToken);
-        
-        // Configurar regras de firewall
+        // Configurar regras de firewall para esta interface específica
         await ConfigureFirewallRulesAsync(interfaceName, vpnNetwork.Cidr, cancellationToken);
         
         // Tentar ativar a interface usando wg-quick
@@ -646,12 +643,29 @@ public class WireGuardServerService : IWireGuardServerService
             }
 
             // Habilitar permanentemente via sysctl
-            var sysctlProcess = new Process
+            // Verificar se já existe no sysctl.conf
+            var checkSysctlProcess = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
                     FileName = "/bin/bash",
-                    Arguments = "-c \"echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && sysctl -p\"",
+                    Arguments = "-c \"grep -q 'net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkSysctlProcess.Start();
+            await checkSysctlProcess.WaitForExitAsync(cancellationToken);
+
+            // Aplicar sysctl
+            var sysctlProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/sbin/sysctl",
+                    Arguments = "-p",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,

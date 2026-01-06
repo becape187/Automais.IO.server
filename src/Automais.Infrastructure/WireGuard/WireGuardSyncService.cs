@@ -39,7 +39,24 @@ public class WireGuardSyncService : IHostedService
 
         try
         {
+            // Configurações do sistema que devem ser validadas/ajustadas na inicialização
+            _logger.LogInformation("⚙️ Validando e configurando sistema para WireGuard...");
+            
+            // 1. Verificar se WireGuard está instalado
+            await VerifyWireGuardInstallationAsync(cancellationToken);
+            
+            // 2. Garantir que o diretório de configuração existe
+            await EnsureWireGuardDirectoryExistsAsync(cancellationToken);
+            
+            // 3. Habilitar encaminhamento IP (necessário para todas as interfaces)
+            await EnableIpForwardingAsync(cancellationToken);
+            
+            // 4. Configurar regras básicas de firewall (porta UDP 51820)
+            await ConfigureBasicFirewallRulesAsync(cancellationToken);
+            
+            // 5. Sincronizar configurações do banco para arquivos
             await SyncWireGuardConfigurationsAsync(cancellationToken);
+            
             _logger.LogInformation("✅ Sincronização do WireGuard concluída com sucesso");
         }
         catch (Exception ex)
@@ -242,6 +259,296 @@ public class WireGuardSyncService : IHostedService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Erro ao salvar configuração WireGuard para interface {InterfaceName}", interfaceName);
+        }
+    }
+
+    /// <summary>
+    /// Habilita o encaminhamento IP (ip_forward) necessário para o WireGuard
+    /// </summary>
+    private async Task EnableIpForwardingAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Verificar se já está habilitado
+            var checkProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"cat /proc/sys/net/ipv4/ip_forward\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            var currentValue = (await checkProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            if (currentValue == "1")
+            {
+                _logger.LogDebug("Encaminhamento IP já está habilitado");
+                return;
+            }
+
+            _logger.LogInformation("Habilitando encaminhamento IP...");
+
+            // Habilitar temporariamente (até reiniciar)
+            // A aplicação roda como root via systemd, então não precisa de sudo
+            var enableProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"echo 1 > /proc/sys/net/ipv4/ip_forward\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            enableProcess.Start();
+            var enableOutput = await enableProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var enableError = await enableProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await enableProcess.WaitForExitAsync(cancellationToken);
+
+            if (enableProcess.ExitCode == 0)
+            {
+                _logger.LogInformation("Encaminhamento IP habilitado temporariamente");
+            }
+            else
+            {
+                _logger.LogWarning("Erro ao habilitar encaminhamento IP temporariamente: {Error}", enableError);
+            }
+
+            // Habilitar permanentemente via sysctl
+            // Verificar se já existe no sysctl.conf
+            var checkSysctlProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = "-c \"grep -q 'net.ipv4.ip_forward=1' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkSysctlProcess.Start();
+            await checkSysctlProcess.WaitForExitAsync(cancellationToken);
+
+            // Aplicar sysctl
+            var sysctlProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/sbin/sysctl",
+                    Arguments = "-p",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            sysctlProcess.Start();
+            var sysctlOutput = await sysctlProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var sysctlError = await sysctlProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await sysctlProcess.WaitForExitAsync(cancellationToken);
+
+            if (sysctlProcess.ExitCode == 0)
+            {
+                _logger.LogInformation("Encaminhamento IP habilitado permanentemente");
+            }
+            else
+            {
+                _logger.LogWarning("Erro ao habilitar encaminhamento IP permanentemente: {Error}", sysctlError);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao habilitar encaminhamento IP");
+            // Não lança exceção - pode ser configurado manualmente
+        }
+    }
+
+    /// <summary>
+    /// Verifica se o WireGuard está instalado no sistema
+    /// </summary>
+    private async Task VerifyWireGuardInstallationAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var wgProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = "--version",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            wgProcess.Start();
+            var output = await wgProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await wgProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await wgProcess.WaitForExitAsync(cancellationToken);
+
+            if (wgProcess.ExitCode == 0)
+            {
+                _logger.LogInformation("WireGuard instalado: {Version}", output.Trim());
+            }
+            else
+            {
+                _logger.LogWarning("WireGuard não encontrado ou não está instalado. Erro: {Error}", error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao verificar instalação do WireGuard");
+        }
+    }
+
+    /// <summary>
+    /// Garante que o diretório de configuração do WireGuard existe
+    /// </summary>
+    private async Task EnsureWireGuardDirectoryExistsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            const string wireGuardDir = "/etc/wireguard";
+            
+            if (!System.IO.Directory.Exists(wireGuardDir))
+            {
+                System.IO.Directory.CreateDirectory(wireGuardDir);
+                _logger.LogInformation("Diretório WireGuard criado: {Directory}", wireGuardDir);
+            }
+            else
+            {
+                _logger.LogDebug("Diretório WireGuard já existe: {Directory}", wireGuardDir);
+            }
+
+            // Verificar permissões (deve ser 755)
+            var dirInfo = new System.IO.DirectoryInfo(wireGuardDir);
+            _logger.LogDebug("Diretório WireGuard: {Path}, Permissões: {Permissions}", 
+                wireGuardDir, dirInfo.Exists ? "OK" : "Não encontrado");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao garantir diretório WireGuard");
+        }
+    }
+
+    /// <summary>
+    /// Configura regras básicas de firewall para WireGuard (porta UDP 51820)
+    /// </summary>
+    private async Task ConfigureBasicFirewallRulesAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Verificar se iptables está disponível
+            var checkProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/sbin/iptables",
+                    Arguments = "--version",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            if (checkProcess.ExitCode != 0)
+            {
+                _logger.LogWarning("iptables não encontrado. Regras de firewall não serão configuradas automaticamente.");
+                return;
+            }
+
+            // Permitir tráfego na porta WireGuard (UDP 51820)
+            await ExecuteIptablesCommandAsync("-A INPUT -p udp --dport 51820 -j ACCEPT", cancellationToken);
+            
+            _logger.LogInformation("Regras básicas de firewall configuradas para WireGuard");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao configurar regras básicas de firewall");
+        }
+    }
+
+    /// <summary>
+    /// Executa comando iptables (verifica se já existe antes de adicionar)
+    /// </summary>
+    private async Task ExecuteIptablesCommandAsync(string rule, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Extrair a ação (INPUT, OUTPUT, FORWARD) e a regra
+            var parts = rule.Split(new[] { ' ' }, 2);
+            if (parts.Length < 2) return;
+
+            var action = parts[0]; // -A INPUT, -A OUTPUT, etc.
+            var rulePart = parts[1];
+
+            // Verificar se a regra já existe
+            var checkProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/bin/bash",
+                    Arguments = $"-c \"iptables -C {rulePart} 2>/dev/null\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            // Se a regra não existe (exit code != 0), adicionar
+            if (checkProcess.ExitCode != 0)
+            {
+                var addProcess = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "/usr/sbin/iptables",
+                        Arguments = $"{action} {rulePart}",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                addProcess.Start();
+                var output = await addProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+                var error = await addProcess.StandardError.ReadToEndAsync(cancellationToken);
+                await addProcess.WaitForExitAsync(cancellationToken);
+
+                if (addProcess.ExitCode == 0)
+                {
+                    _logger.LogDebug("Regra iptables adicionada: {Rule}", rule);
+                }
+                else
+                {
+                    _logger.LogWarning("Erro ao adicionar regra iptables {Rule}: {Error}", rule, error);
+                }
+            }
+            else
+            {
+                _logger.LogDebug("Regra iptables já existe: {Rule}", rule);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao executar comando iptables: {Rule}", rule);
         }
     }
 }

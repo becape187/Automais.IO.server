@@ -35,4 +35,10 @@
     <ProjectReference Include="..\Automais.Core\Automais.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="ca-certificate.crt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

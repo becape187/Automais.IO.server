@@ -258,10 +258,13 @@ public class WireGuardServerService : IWireGuardServerService
         peer.ConfigContent = config;
         await _peerRepository.UpdateAsync(peer, cancellationToken);
 
+        // Sanitizar o nome do router para o nome do arquivo
+        var sanitizedRouterName = SanitizeFileName(router.Name);
+        
         return new RouterWireGuardConfigDto
         {
             ConfigContent = config,
-            FileName = $"router_{router.Name}_{routerId}.conf"
+            FileName = $"router_{sanitizedRouterName}_{routerId}.conf"
         };
     }
 
@@ -293,10 +296,14 @@ public class WireGuardServerService : IWireGuardServerService
         if (!string.IsNullOrEmpty(peer.ConfigContent))
         {
             _logger?.LogDebug("Retornando configuração VPN salva para router {RouterId}", routerId);
+            
+            // Sanitizar o nome do router para o nome do arquivo
+            var sanitizedRouterName = SanitizeFileName(router.Name);
+            
             return new RouterWireGuardConfigDto
             {
                 ConfigContent = peer.ConfigContent,
-                FileName = $"router_{router.Name}_{routerId}.conf"
+                FileName = $"router_{sanitizedRouterName}_{routerId}.conf"
             };
         }
 
@@ -1297,6 +1304,39 @@ public class WireGuardServerService : IWireGuardServerService
         }
 
         throw new InvalidOperationException("Não há IPs disponíveis na rede VPN.");
+    }
+
+    /// <summary>
+    /// Sanitiza o nome do arquivo removendo caracteres inválidos
+    /// </summary>
+    private static string SanitizeFileName(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return "router";
+
+        // Remover caracteres inválidos para nomes de arquivo
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var sanitized = new string(fileName
+            .Where(c => !invalidChars.Contains(c))
+            .ToArray());
+
+        // Substituir espaços por underscores
+        sanitized = sanitized.Replace(" ", "_");
+
+        // Remover underscores múltiplos
+        while (sanitized.Contains("__"))
+        {
+            sanitized = sanitized.Replace("__", "_");
+        }
+
+        // Remover underscores no início e fim
+        sanitized = sanitized.Trim('_');
+
+        // Se ficou vazio após sanitização, usar nome padrão
+        if (string.IsNullOrWhiteSpace(sanitized))
+            return "router";
+
+        return sanitized;
     }
 
     private static RouterWireGuardPeerDto MapToDto(RouterWireGuardPeer peer)

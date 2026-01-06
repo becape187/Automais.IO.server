@@ -1,6 +1,7 @@
 using Automais.Core.DTOs;
 using Automais.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using System.Net.Http.Headers;
 using System.Text;
 
 namespace Automais.Api.Controllers;
@@ -132,8 +133,26 @@ public class RouterWireGuardController : ControllerBase
                 .Replace(">", "")
                 .Replace("|", "");
             
-            // Configurar o header Content-Disposition manualmente para evitar codificação duplicada
-            Response.Headers.Append("Content-Disposition", $"attachment; filename=\"{fileName}\"");
+            // Garantir que o nome do arquivo termina com .conf (sem underscore)
+            if (!fileName.EndsWith(".conf", StringComparison.OrdinalIgnoreCase))
+            {
+                // Se não termina com .conf, adicionar
+                if (fileName.EndsWith(".conf_", StringComparison.OrdinalIgnoreCase))
+                {
+                    fileName = fileName.Substring(0, fileName.Length - 1); // Remove o underscore
+                }
+                else if (!fileName.Contains("."))
+                {
+                    fileName = fileName + ".conf";
+                }
+            }
+            
+            // Configurar o header Content-Disposition usando ContentDispositionHeaderValue
+            var contentDisposition = new ContentDispositionHeaderValue("attachment")
+            {
+                FileName = fileName
+            };
+            Response.Headers.ContentDisposition = contentDisposition.ToString();
             
             return new FileContentResult(bytes, "text/plain");
         }

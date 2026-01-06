@@ -158,7 +158,10 @@ public class RouterWireGuardService : IRouterWireGuardService
 
         // Gerar conteúdo do arquivo .conf
         var configContent = GenerateWireGuardConfig(peer, router, vpnNetwork);
-        var fileName = $"router_{router.Name}_{peer.Id}.conf";
+        
+        // Sanitizar o nome do router para o nome do arquivo
+        var sanitizedRouterName = SanitizeFileName(router.Name);
+        var fileName = $"router_{sanitizedRouterName}_{peer.Id}.conf";
 
         return new RouterWireGuardConfigDto
         {
@@ -233,6 +236,39 @@ public class RouterWireGuardService : IRouterWireGuardService
             CreatedAt = peer.CreatedAt,
             UpdatedAt = peer.UpdatedAt
         };
+    }
+
+    /// <summary>
+    /// Sanitiza o nome do arquivo removendo caracteres inválidos
+    /// </summary>
+    private static string SanitizeFileName(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return "router";
+
+        // Remover caracteres inválidos para nomes de arquivo (sem usar Path para manter na camada Core)
+        var invalidChars = new[] { '"', '<', '>', '|', ':', '*', '?', '\\', '/' };
+        var sanitized = new string(fileName
+            .Where(c => !invalidChars.Contains(c))
+            .ToArray());
+
+        // Substituir espaços por underscores
+        sanitized = sanitized.Replace(" ", "_");
+
+        // Remover underscores múltiplos
+        while (sanitized.Contains("__"))
+        {
+            sanitized = sanitized.Replace("__", "_");
+        }
+
+        // Remover underscores no início e fim
+        sanitized = sanitized.Trim('_');
+
+        // Se ficou vazio após sanitização, usar nome padrão
+        if (string.IsNullOrWhiteSpace(sanitized))
+            return "router";
+
+        return sanitized;
     }
 }
 

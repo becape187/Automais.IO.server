@@ -109,10 +109,11 @@ public class WireGuardSyncService : IHostedService
 
     /// <summary>
     /// Sincroniza uma VpnNetwork específica
+    /// Faz um RELOAD COMPLETO: down → recria arquivo com todos os peers → up
     /// </summary>
     private async Task SyncVpnNetworkAsync(Guid vpnNetworkId, CancellationToken cancellationToken)
     {
-        _logger.LogDebug("Sincronizando VpnNetwork {VpnNetworkId}", vpnNetworkId);
+        _logger.LogInformation("🔄 Iniciando sincronização completa (reload) da VpnNetwork {VpnNetworkId}", vpnNetworkId);
 
         var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
         if (vpnNetwork == null)
@@ -121,72 +122,268 @@ public class WireGuardSyncService : IHostedService
             return;
         }
 
-        // Buscar todos os peers desta VpnNetwork
-        var peers = await _peerRepository.GetByVpnNetworkIdAsync(vpnNetworkId, cancellationToken);
-        
-        // Garantir que a interface existe (independente de ter peers ou não)
         var interfaceName = GetInterfaceName(vpnNetworkId);
+        var configPath = $"/etc/wireguard/{interfaceName}.conf";
+
+        // 1. Fazer DOWN da interface se estiver ativa (para garantir limpeza)
+        await DownInterfaceIfActiveAsync(interfaceName, cancellationToken);
+
+        // 2. Garantir que a interface existe (cria arquivo base com chaves do banco)
         await EnsureInterfaceExistsAsync(interfaceName, vpnNetwork, cancellationToken);
+
+        // 3. Buscar todos os peers desta VpnNetwork do banco
+        var peers = await _peerRepository.GetByVpnNetworkIdAsync(vpnNetworkId, cancellationToken);
         
         if (!peers.Any())
         {
-            _logger.LogDebug("VpnNetwork {VpnNetworkId} não possui peers. Interface garantida.", vpnNetworkId);
+            _logger.LogInformation("VpnNetwork {VpnNetworkId} não possui peers. Interface base criada.", vpnNetworkId);
+            // Ativar interface mesmo sem peers (pode receber peers depois)
+            await UpInterfaceAsync(interfaceName, cancellationToken);
             return;
         }
 
-        _logger.LogInformation("Sincronizando {PeerCount} peers da VpnNetwork {VpnNetworkId}", peers.Count(), vpnNetworkId);
+        _logger.LogInformation("Recriando arquivo de configuração com {PeerCount} peers do banco", peers.Count());
 
-        // Sincronizar cada peer
+        // 4. Recriar arquivo .conf COMPLETO com todos os peers do banco
+        await RecreateConfigFileWithAllPeersAsync(interfaceName, vpnNetwork, peers, cancellationToken);
+
+        // 5. Fazer UP da interface (recarrega tudo)
+        await UpInterfaceAsync(interfaceName, cancellationToken);
+        
+        _logger.LogInformation("✅ VpnNetwork {VpnNetworkId} sincronizada com sucesso (reload completo)", vpnNetworkId);
+    }
+
+    /// <summary>
+    /// Faz DOWN da interface se estiver ativa (para garantir limpeza antes do reload)
+    /// </summary>
+    private async Task DownInterfaceIfActiveAsync(string interfaceName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Verificar se a interface está ativa
+            var checkProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = $"show {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            // Se a interface está ativa, fazer down
+            if (checkProcess.ExitCode == 0)
+            {
+                _logger.LogDebug("Interface {InterfaceName} está ativa. Fazendo down para reload...", interfaceName);
+                
+                var downProcess = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "/usr/bin/wg-quick",
+                        Arguments = $"down {interfaceName}",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                downProcess.Start();
+                var output = await downProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+                var error = await downProcess.StandardError.ReadToEndAsync(cancellationToken);
+                await downProcess.WaitForExitAsync(cancellationToken);
+
+                if (downProcess.ExitCode == 0)
+                {
+                    _logger.LogDebug("Interface {InterfaceName} desativada para reload", interfaceName);
+                }
+                else
+                {
+                    _logger.LogWarning("Erro ao desativar interface {InterfaceName}: {Error}", interfaceName, error);
+                }
+            }
+            else
+            {
+                _logger.LogDebug("Interface {InterfaceName} não está ativa. Prosseguindo...", interfaceName);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Erro ao verificar/desativar interface {InterfaceName}", interfaceName);
+            // Não lança exceção - continua com o processo
+        }
+    }
+
+    /// <summary>
+    /// Recria o arquivo de configuração .conf do ZERO com TODOS os peers do banco.
+    /// IMPORTANTE: Recria completamente para garantir que não há peers órfãos.
+    /// </summary>
+    private async Task RecreateConfigFileWithAllPeersAsync(
+        string interfaceName,
+        Automais.Core.Entities.VpnNetwork vpnNetwork,
+        IEnumerable<Automais.Core.Entities.RouterWireGuardPeer> peers,
+        CancellationToken cancellationToken)
+    {
+        var configPath = $"/etc/wireguard/{interfaceName}.conf";
+        
+        // RECRIAR DO ZERO - não ler arquivo existente para evitar peers órfãos
+        var configContent = new System.Text.StringBuilder();
+        
+        // Seção [Interface] - usar chaves do BANCO (fonte de verdade)
+        configContent.AppendLine("[Interface]");
+        
+        if (string.IsNullOrEmpty(vpnNetwork.ServerPrivateKey))
+        {
+            _logger.LogError("VpnNetwork {VpnNetworkId} não possui ServerPrivateKey no banco. Não é possível recriar arquivo.", vpnNetwork.Id);
+            throw new InvalidOperationException($"VpnNetwork {vpnNetwork.Id} não possui chave privada do servidor no banco.");
+        }
+        
+        configContent.AppendLine($"PrivateKey = {vpnNetwork.ServerPrivateKey}");
+        
+        // Parse do CIDR para obter o IP do servidor (.1)
+        var cidrParts = vpnNetwork.Cidr.Split('/');
+        if (cidrParts.Length != 2)
+        {
+            throw new InvalidOperationException($"CIDR inválido: {vpnNetwork.Cidr}");
+        }
+        
+        var ipParts = cidrParts[0].Split('.');
+        if (ipParts.Length != 4)
+        {
+            throw new InvalidOperationException($"IP inválido no CIDR: {vpnNetwork.Cidr}");
+        }
+        
+        // Servidor sempre usa .1
+        var serverIp = $"{ipParts[0]}.{ipParts[1]}.{ipParts[2]}.1/{cidrParts[1]}";
+        configContent.AppendLine($"Address = {serverIp}");
+        configContent.AppendLine("ListenPort = 51820");
+        
+        // DNS se configurado
+        if (!string.IsNullOrWhiteSpace(vpnNetwork.DnsServers))
+        {
+            configContent.AppendLine($"DNS = {vpnNetwork.DnsServers}");
+        }
+        
+        // Adicionar todos os peers do banco
+        configContent.AppendLine();
+        configContent.AppendLine("# Peers sincronizados do banco de dados");
+        
         foreach (var peer in peers)
         {
             try
             {
-                await SyncPeerAsync(peer, vpnNetwork, cancellationToken);
+                // Verificar se peer está habilitado
+                if (!peer.IsEnabled)
+                {
+                    _logger.LogDebug("Peer {PeerId} está desabilitado. Pulando.", peer.Id);
+                    continue;
+                }
+                
+                var router = await _routerRepository.GetByIdAsync(peer.RouterId, cancellationToken);
+                if (router == null)
+                {
+                    _logger.LogWarning("Router {RouterId} do peer {PeerId} não encontrado. Pulando peer.", peer.RouterId, peer.Id);
+                    continue;
+                }
+
+                // Buscar redes permitidas
+                var allowedNetworks = await _allowedNetworkRepository.GetByRouterIdAsync(peer.RouterId, cancellationToken);
+                var allowedIps = new List<string> { peer.AllowedIps };
+                allowedIps.AddRange(allowedNetworks.Select(n => n.NetworkCidr));
+                var allowedIpsString = string.Join(", ", allowedIps);
+
+                // Adicionar seção [Peer]
+                configContent.AppendLine();
+                configContent.AppendLine($"# Router: {router.Name} (ID: {router.Id})");
+                configContent.AppendLine("[Peer]");
+                configContent.AppendLine($"PublicKey = {peer.PublicKey}");
+                // Nota: Endpoint não é necessário na configuração do servidor
+                // O servidor escuta em todas as interfaces na porta 51820
+                configContent.AppendLine($"AllowedIPs = {allowedIpsString}");
+                configContent.AppendLine("PersistentKeepalive = 25");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao sincronizar peer {PeerId}", peer.Id);
+                _logger.LogError(ex, "Erro ao adicionar peer {PeerId} ao arquivo de configuração", peer.Id);
             }
         }
 
-        // Salvar configuração persistente
-        await SaveWireGuardConfigAsync(interfaceName, cancellationToken);
+        // Salvar arquivo completo (sobrescreve completamente)
+        await System.IO.File.WriteAllTextAsync(configPath, configContent.ToString(), cancellationToken);
         
-        // Ativar interface se não estiver ativa
-        await ActivateInterfaceIfNeededAsync(interfaceName, cancellationToken);
+        // Definir permissões corretas (600 = rw-------)
+        try
+        {
+            var chmodProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/bin/chmod",
+                    Arguments = $"600 {configPath}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            chmodProcess.Start();
+            await chmodProcess.WaitForExitAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Erro ao definir permissões do arquivo de configuração");
+        }
         
-        _logger.LogInformation("VpnNetwork {VpnNetworkId} sincronizada com sucesso", vpnNetworkId);
+        _logger.LogInformation("✅ Arquivo de configuração {ConfigPath} recriado do ZERO com {PeerCount} peers do banco", 
+            configPath, peers.Count(p => p.IsEnabled));
     }
 
     /// <summary>
-    /// Sincroniza um peer específico
+    /// Faz UP da interface (ativa/reload)
     /// </summary>
-    private async Task SyncPeerAsync(
-        Automais.Core.Entities.RouterWireGuardPeer peer,
-        Automais.Core.Entities.VpnNetwork vpnNetwork,
-        CancellationToken cancellationToken)
+    private async Task UpInterfaceAsync(string interfaceName, CancellationToken cancellationToken)
     {
-        var router = await _routerRepository.GetByIdAsync(peer.RouterId, cancellationToken);
-        if (router == null)
+        try
         {
-            _logger.LogWarning("Router {RouterId} do peer {PeerId} não encontrado", peer.RouterId, peer.Id);
-            return;
+            _logger.LogInformation("Ativando interface WireGuard {InterfaceName}...", interfaceName);
+            
+            var upProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg-quick",
+                    Arguments = $"up {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            upProcess.Start();
+            var upOutput = await upProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var upError = await upProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await upProcess.WaitForExitAsync(cancellationToken);
+
+            if (upProcess.ExitCode == 0)
+            {
+                _logger.LogInformation("✅ Interface WireGuard {InterfaceName} ativada com sucesso", interfaceName);
+            }
+            else
+            {
+                _logger.LogError("❌ Erro ao ativar interface WireGuard {InterfaceName}: {Error}", interfaceName, upError);
+                throw new InvalidOperationException($"Falha ao ativar interface {interfaceName}: {upError}");
+            }
         }
-
-        // Buscar redes permitidas
-        var allowedNetworks = await _allowedNetworkRepository.GetByRouterIdAsync(peer.RouterId, cancellationToken);
-        var allowedIps = new List<string> { peer.AllowedIps };
-        allowedIps.AddRange(allowedNetworks.Select(n => n.NetworkCidr));
-
-        var interfaceName = GetInterfaceName(vpnNetwork.Id);
-        var allowedIpsString = string.Join(",", allowedIps);
-
-        // Adicionar/atualizar peer na interface WireGuard
-        await ExecuteWireGuardCommandAsync(
-            $"set {interfaceName} peer {peer.PublicKey} allowed-ips {allowedIpsString}",
-            cancellationToken);
-
-        _logger.LogDebug("Peer {PeerId} sincronizado na interface {InterfaceName}", peer.Id, interfaceName);
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao ativar interface WireGuard {InterfaceName}", interfaceName);
+            throw;
+        }
     }
 
     /// <summary>

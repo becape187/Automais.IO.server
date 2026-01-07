@@ -1,6 +1,7 @@
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Automais.Api.Controllers;
 
@@ -11,15 +12,18 @@ public class RouterManagementController : ControllerBase
 {
     private readonly IRouterRepository _routerRepository;
     private readonly IRouterOsClient _routerOsClient;
+    private readonly IRouterWireGuardPeerRepository _peerRepository;
     private readonly ILogger<RouterManagementController> _logger;
 
     public RouterManagementController(
         IRouterRepository routerRepository,
         IRouterOsClient routerOsClient,
+        IRouterWireGuardPeerRepository peerRepository,
         ILogger<RouterManagementController> logger)
     {
         _routerRepository = routerRepository;
         _routerOsClient = routerOsClient;
+        _peerRepository = peerRepository;
         _logger = logger;
     }
 
@@ -39,10 +43,49 @@ public class RouterManagementController : ControllerBase
             }
 
             _logger.LogInformation("Verificando status do router {RouterId} ({RouterName})", routerId, router.Name);
+            
+            // Log detalhado das credenciais (sem mostrar senha completa)
+            _logger.LogInformation("RouterOsApiUrl: {Url} (null: {IsNull}, empty: {IsEmpty})", 
+                router.RouterOsApiUrl ?? "(null)", 
+                router.RouterOsApiUrl == null, 
+                string.IsNullOrWhiteSpace(router.RouterOsApiUrl));
+            _logger.LogInformation("RouterOsApiUsername: {Username} (null: {IsNull}, empty: {IsEmpty})", 
+                router.RouterOsApiUsername ?? "(null)", 
+                router.RouterOsApiUsername == null, 
+                string.IsNullOrWhiteSpace(router.RouterOsApiUsername));
+            _logger.LogInformation("RouterOsApiPassword: {PasswordInfo} (null: {IsNull}, empty: {IsEmpty})", 
+                string.IsNullOrWhiteSpace(router.RouterOsApiPassword) ? "(vazio)" : "***", 
+                router.RouterOsApiPassword == null, 
+                string.IsNullOrWhiteSpace(router.RouterOsApiPassword));
+
+            // Se RouterOsApiUrl estiver vazio, tentar buscar IP do peer WireGuard
+            var apiUrl = router.RouterOsApiUrl;
+            if (string.IsNullOrWhiteSpace(apiUrl))
+            {
+                _logger.LogInformation("RouterOsApiUrl está vazio. Tentando buscar IP do peer WireGuard...");
+                var peers = await _peerRepository.GetByRouterIdAsync(routerId, cancellationToken);
+                var peerList = peers.ToList();
+                
+                if (peerList.Any())
+                {
+                    var firstPeer = peerList.First();
+                    if (!string.IsNullOrWhiteSpace(firstPeer.AllowedIps))
+                    {
+                        // Extrair IP do formato "10.222.111.2/24" -> "10.222.111.2"
+                        var allowedIps = firstPeer.AllowedIps.Split(',')[0].Trim();
+                        var ipParts = allowedIps.Split('/');
+                        var ip = ipParts[0].Trim();
+                        
+                        // Construir URL da API com porta padrão 8728
+                        apiUrl = $"{ip}:8728";
+                        _logger.LogInformation("IP extraído do peer WireGuard: {Ip}. URL da API: {ApiUrl}", ip, apiUrl);
+                    }
+                }
+            }
 
             // Verificar quais credenciais estão faltando
             var missingFields = new List<string>();
-            if (string.IsNullOrWhiteSpace(router.RouterOsApiUrl))
+            if (string.IsNullOrWhiteSpace(apiUrl))
                 missingFields.Add("RouterOsApiUrl");
             if (string.IsNullOrWhiteSpace(router.RouterOsApiUsername))
                 missingFields.Add("RouterOsApiUsername");
@@ -51,21 +94,32 @@ public class RouterManagementController : ControllerBase
 
             if (missingFields.Any())
             {
-                _logger.LogWarning("Router {RouterId} está sem credenciais: {MissingFields}", routerId, string.Join(", ", missingFields));
+                _logger.LogWarning("Router {RouterId} está sem credenciais: {MissingFields}. RouterOsApiUrl='{Url}', RouterOsApiUsername='{Username}', RouterOsApiPassword está null/empty: {PasswordEmpty}", 
+                    routerId, 
+                    string.Join(", ", missingFields),
+                    apiUrl ?? "(null)",
+                    router.RouterOsApiUsername ?? "(null)",
+                    string.IsNullOrWhiteSpace(router.RouterOsApiPassword));
                 return BadRequest(new 
                 { 
                     message = "Credenciais da API RouterOS não configuradas",
                     missingFields = missingFields,
                     routerId = router.Id,
-                    routerName = router.Name
+                    routerName = router.Name,
+                    details = new
+                    {
+                        routerOsApiUrl = apiUrl ?? "(null)",
+                        routerOsApiUsername = router.RouterOsApiUsername ?? "(null)",
+                        routerOsApiPasswordConfigured = !string.IsNullOrWhiteSpace(router.RouterOsApiPassword)
+                    }
                 });
             }
 
             _logger.LogInformation("Testando conexão RouterOS: {ApiUrl}, Username: {Username}", 
-                router.RouterOsApiUrl, router.RouterOsApiUsername);
+                apiUrl, router.RouterOsApiUsername);
 
             var isConnected = await _routerOsClient.TestConnectionAsync(
-                router.RouterOsApiUrl,
+                apiUrl,
                 router.RouterOsApiUsername,
                 router.RouterOsApiPassword,
                 cancellationToken);
@@ -77,7 +131,7 @@ public class RouterManagementController : ControllerBase
                 connected = isConnected,
                 routerId = router.Id,
                 routerName = router.Name,
-                apiUrl = router.RouterOsApiUrl,
+                apiUrl = apiUrl, // Usar a URL resolvida (pode ser do router ou do peer)
                 username = router.RouterOsApiUsername
             });
         }
@@ -102,11 +156,12 @@ public class RouterManagementController : ControllerBase
     {
         try
         {
-            var router = await GetRouterWithCredentials(routerId, cancellationToken);
-            if (router == null) return NotFound(new { message = "Router não encontrado" });
+            var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
+            if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
+            var (router, apiUrl) = routerData;
             var rules = await _routerOsClient.ExecuteCommandAsync(
-                router.RouterOsApiUrl!,
+                apiUrl,
                 router.RouterOsApiUsername!,
                 router.RouterOsApiPassword!,
                 "/ip/firewall/filter/print",
@@ -129,11 +184,12 @@ public class RouterManagementController : ControllerBase
     {
         try
         {
-            var router = await GetRouterWithCredentials(routerId, cancellationToken);
-            if (router == null) return NotFound(new { message = "Router não encontrado" });
+            var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
+            if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
+            var (router, apiUrl) = routerData;
             var rules = await _routerOsClient.ExecuteCommandAsync(
-                router.RouterOsApiUrl!,
+                apiUrl,
                 router.RouterOsApiUsername!,
                 router.RouterOsApiPassword!,
                 "/ip/firewall/nat/print",
@@ -156,11 +212,12 @@ public class RouterManagementController : ControllerBase
     {
         try
         {
-            var router = await GetRouterWithCredentials(routerId, cancellationToken);
-            if (router == null) return NotFound(new { message = "Router não encontrado" });
+            var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
+            if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
+            var (router, apiUrl) = routerData;
             var routes = await _routerOsClient.ExecuteCommandAsync(
-                router.RouterOsApiUrl!,
+                apiUrl,
                 router.RouterOsApiUsername!,
                 router.RouterOsApiPassword!,
                 "/ip/route/print",
@@ -183,11 +240,12 @@ public class RouterManagementController : ControllerBase
     {
         try
         {
-            var router = await GetRouterWithCredentials(routerId, cancellationToken);
-            if (router == null) return NotFound(new { message = "Router não encontrado" });
+            var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
+            if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
+            var (router, apiUrl) = routerData;
             var interfaces = await _routerOsClient.ExecuteCommandAsync(
-                router.RouterOsApiUrl!,
+                apiUrl,
                 router.RouterOsApiUsername!,
                 router.RouterOsApiPassword!,
                 "/interface/print",
@@ -213,8 +271,10 @@ public class RouterManagementController : ControllerBase
     {
         try
         {
-            var router = await GetRouterWithCredentials(routerId, cancellationToken);
-            if (router == null) return NotFound(new { message = "Router não encontrado" });
+            var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
+            if (routerData == null) return NotFound(new { message = "Router não encontrado" });
+
+            var (router, apiUrl) = routerData;
 
             if (string.IsNullOrWhiteSpace(dto.Command))
             {
@@ -230,7 +290,7 @@ public class RouterManagementController : ControllerBase
             if (isReadCommand)
             {
                 var result = await _routerOsClient.ExecuteCommandAsync(
-                    router.RouterOsApiUrl!,
+                    apiUrl,
                     router.RouterOsApiUsername!,
                     router.RouterOsApiPassword!,
                     command,
@@ -241,7 +301,7 @@ public class RouterManagementController : ControllerBase
             else
             {
                 await _routerOsClient.ExecuteCommandNoResultAsync(
-                    router.RouterOsApiUrl!,
+                    apiUrl,
                     router.RouterOsApiUsername!,
                     router.RouterOsApiPassword!,
                     command,
@@ -257,19 +317,44 @@ public class RouterManagementController : ControllerBase
         }
     }
 
-    private async Task<Automais.Core.Entities.Router?> GetRouterWithCredentials(Guid routerId, CancellationToken cancellationToken)
+    private async Task<(Automais.Core.Entities.Router router, string apiUrl)?> GetRouterWithCredentials(Guid routerId, CancellationToken cancellationToken)
     {
         var router = await _routerRepository.GetByIdAsync(routerId, cancellationToken);
         if (router == null) return null;
 
-        if (string.IsNullOrWhiteSpace(router.RouterOsApiUrl) ||
+        // Se RouterOsApiUrl estiver vazio, tentar buscar IP do peer WireGuard
+        var apiUrl = router.RouterOsApiUrl;
+        if (string.IsNullOrWhiteSpace(apiUrl))
+        {
+            _logger.LogInformation("RouterOsApiUrl está vazio. Tentando buscar IP do peer WireGuard para router {RouterId}...", routerId);
+            var peers = await _peerRepository.GetByRouterIdAsync(routerId, cancellationToken);
+            var peerList = peers.ToList();
+            
+            if (peerList.Any())
+            {
+                var firstPeer = peerList.First();
+                if (!string.IsNullOrWhiteSpace(firstPeer.AllowedIps))
+                {
+                    // Extrair IP do formato "10.222.111.2/24" -> "10.222.111.2"
+                    var allowedIps = firstPeer.AllowedIps.Split(',')[0].Trim();
+                    var ipParts = allowedIps.Split('/');
+                    var ip = ipParts[0].Trim();
+                    
+                    // Construir URL da API com porta padrão 8728
+                    apiUrl = $"{ip}:8728";
+                    _logger.LogInformation("IP extraído do peer WireGuard: {Ip}. URL da API: {ApiUrl}", ip, apiUrl);
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(apiUrl) ||
             string.IsNullOrWhiteSpace(router.RouterOsApiUsername) ||
             string.IsNullOrWhiteSpace(router.RouterOsApiPassword))
         {
             throw new InvalidOperationException("Credenciais da API RouterOS não configuradas");
         }
 
-        return router;
+        return (router, apiUrl);
     }
 }
 

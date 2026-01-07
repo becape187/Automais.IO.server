@@ -6,6 +6,7 @@ using Automais.Infrastructure.ChirpStack;
 using Automais.Infrastructure.Data;
 using Automais.Infrastructure.Repositories;
 using Automais.Infrastructure.RouterOS;
+using Automais.Infrastructure.Services;
 using Automais.Infrastructure.WireGuard;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -279,8 +280,14 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
     return new Automais.Core.Services.RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, wireGuardServerService, logger);
 });
 
+// SignalR para notificações em tempo real
+builder.Services.AddSignalR();
+
 // Serviço de sincronização do WireGuard (executa na inicialização)
 builder.Services.AddHostedService<WireGuardSyncService>();
+
+// Serviço de monitoramento de status dos roteadores (executa periodicamente)
+builder.Services.AddHostedService<RouterStatusMonitorService>();
 
 // RouterBackupService com caminho de storage configurável
 var backupStoragePath = builder.Configuration["Backup:StoragePath"] ?? "/backups/routers";
@@ -457,6 +464,9 @@ app.UseSwaggerUI(c =>
 app.UseCors("AllowFrontend");
 app.UseAuthorization();
 app.MapControllers();
+
+// SignalR Hub
+app.MapHub<Automais.Core.Hubs.RouterStatusHub>("/hubs/router-status");
 
 // Endpoint de tratamento de erros
 app.Map("/error", (HttpContext context) =>

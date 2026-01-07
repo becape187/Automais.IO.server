@@ -446,7 +446,50 @@ public class WireGuardSyncService : IHostedService
         }
 
         // Salvar arquivo completo (sobrescreve completamente)
-        await System.IO.File.WriteAllTextAsync(configPath, configContent.ToString(), cancellationToken);
+        // IMPORTANTE: Usar UTF8 sem BOM e garantir formato correto (sem espaços extras)
+        var fileContent = configContent.ToString();
+        
+        // Limpar e normalizar o conteúdo do arquivo
+        var lines = fileContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        var cleanedLines = new List<string>();
+        
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            // Pular linhas vazias, mas manter estrutura
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                // Manter uma linha vazia entre seções
+                if (cleanedLines.Count > 0 && !string.IsNullOrWhiteSpace(cleanedLines[cleanedLines.Count - 1]))
+                {
+                    cleanedLines.Add("");
+                }
+                continue;
+            }
+            
+            // Normalizar linhas de configuração (garantir espaço antes e depois do =)
+            if (trimmed.Contains('=') && !trimmed.TrimStart().StartsWith("#"))
+            {
+                var parts = trimmed.Split(new[] { '=' }, 2);
+                if (parts.Length == 2)
+                {
+                    var key = parts[0].TrimEnd();
+                    var value = parts[1].TrimStart();
+                    trimmed = $"{key} = {value}";
+                }
+            }
+            
+            cleanedLines.Add(trimmed);
+        }
+        
+        var finalContent = string.Join("\n", cleanedLines);
+        if (!string.IsNullOrEmpty(finalContent) && !finalContent.EndsWith("\n"))
+        {
+            finalContent += "\n";
+        }
+        
+        var utf8NoBom = new System.Text.UTF8Encoding(false);
+        await System.IO.File.WriteAllTextAsync(configPath, finalContent, utf8NoBom, cancellationToken);
         
         // Definir permissões corretas (600 = rw-------)
         try

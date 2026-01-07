@@ -34,21 +34,43 @@ public class RouterManagementController : ControllerBase
             var router = await _routerRepository.GetByIdAsync(routerId, cancellationToken);
             if (router == null)
             {
+                _logger.LogWarning("Router {RouterId} não encontrado", routerId);
                 return NotFound(new { message = $"Router com ID {routerId} não encontrado" });
             }
 
-            if (string.IsNullOrWhiteSpace(router.RouterOsApiUrl) ||
-                string.IsNullOrWhiteSpace(router.RouterOsApiUsername) ||
-                string.IsNullOrWhiteSpace(router.RouterOsApiPassword))
+            _logger.LogInformation("Verificando status do router {RouterId} ({RouterName})", routerId, router.Name);
+
+            // Verificar quais credenciais estão faltando
+            var missingFields = new List<string>();
+            if (string.IsNullOrWhiteSpace(router.RouterOsApiUrl))
+                missingFields.Add("RouterOsApiUrl");
+            if (string.IsNullOrWhiteSpace(router.RouterOsApiUsername))
+                missingFields.Add("RouterOsApiUsername");
+            if (string.IsNullOrWhiteSpace(router.RouterOsApiPassword))
+                missingFields.Add("RouterOsApiPassword");
+
+            if (missingFields.Any())
             {
-                return BadRequest(new { message = "Credenciais da API RouterOS não configuradas" });
+                _logger.LogWarning("Router {RouterId} está sem credenciais: {MissingFields}", routerId, string.Join(", ", missingFields));
+                return BadRequest(new 
+                { 
+                    message = "Credenciais da API RouterOS não configuradas",
+                    missingFields = missingFields,
+                    routerId = router.Id,
+                    routerName = router.Name
+                });
             }
+
+            _logger.LogInformation("Testando conexão RouterOS: {ApiUrl}, Username: {Username}", 
+                router.RouterOsApiUrl, router.RouterOsApiUsername);
 
             var isConnected = await _routerOsClient.TestConnectionAsync(
                 router.RouterOsApiUrl,
                 router.RouterOsApiUsername,
                 router.RouterOsApiPassword,
                 cancellationToken);
+
+            _logger.LogInformation("Resultado do teste de conexão para router {RouterId}: {IsConnected}", routerId, isConnected);
 
             return Ok(new
             {
@@ -62,7 +84,13 @@ public class RouterManagementController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Erro ao verificar status da conexão do router {RouterId}", routerId);
-            return StatusCode(500, new { message = "Erro ao verificar conexão", detail = ex.Message });
+            return StatusCode(500, new 
+            { 
+                message = "Erro ao verificar conexão", 
+                detail = ex.Message,
+                innerException = ex.InnerException?.Message,
+                stackTrace = ex.StackTrace
+            });
         }
     }
 

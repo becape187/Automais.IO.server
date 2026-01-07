@@ -22,7 +22,20 @@ public class RouterOsClient : IRouterOsClient
     {
         try
         {
+            if (string.IsNullOrWhiteSpace(apiUrl))
+            {
+                _logger?.LogWarning("API URL está vazia");
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+            {
+                _logger?.LogWarning("Username ou password estão vazios");
+                return false;
+            }
+
             var (host, port) = ParseApiUrl(apiUrl);
+            _logger?.LogDebug("Conectando ao RouterOS: {Host}:{Port}", host, port);
             
             // Tentar conectar e autenticar usando protocolo RouterOS API
             using var client = new TcpClient();

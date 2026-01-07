@@ -20,6 +20,14 @@ public class RouterOsClient : IRouterOsClient
 
     public async Task<bool> TestConnectionAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default)
     {
+        // Timeout de 5 segundos para não travar a API
+        const int timeoutSeconds = 5;
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        
+        string host = string.Empty;
+        int port = 0;
+        
         try
         {
             if (string.IsNullOrWhiteSpace(apiUrl))
@@ -34,29 +42,41 @@ public class RouterOsClient : IRouterOsClient
                 return false;
             }
 
-            var (host, port) = ParseApiUrl(apiUrl);
-            _logger?.LogDebug("Conectando ao RouterOS: {Host}:{Port}", host, port);
+            (host, port) = ParseApiUrl(apiUrl);
+            _logger?.LogDebug("Conectando ao RouterOS: {Host}:{Port} (timeout: {Timeout}s)", host, port, timeoutSeconds);
             
             // Tentar conectar e autenticar usando protocolo RouterOS API
             using var client = new TcpClient();
-            client.ReceiveTimeout = 5000;
-            client.SendTimeout = 5000;
-            await client.ConnectAsync(host, port);
+            client.ReceiveTimeout = timeoutSeconds * 1000;
+            client.SendTimeout = timeoutSeconds * 1000;
+            
+            // Conectar com timeout
+            var connectTask = client.ConnectAsync(host, port);
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds), timeoutCts.Token);
+            var completedTask = await Task.WhenAny(connectTask, timeoutTask).ConfigureAwait(false);
+            
+            if (completedTask == timeoutTask)
+            {
+                _logger?.LogWarning("Timeout ao conectar ao RouterOS {Host}:{Port} (timeout: {Timeout}s)", host, port, timeoutSeconds);
+                return false;
+            }
+            
+            await connectTask.ConfigureAwait(false);
             
             var stream = client.GetStream();
             
             // Protocolo RouterOS API:
             // 1. Enviar palavra vazia para iniciar
-            await WriteWordAsync(stream, "", cancellationToken);
+            await WriteWordAsync(stream, "", timeoutCts.Token).ConfigureAwait(false);
             
             // 2. Ler palavra de autenticação inicial (geralmente "!done" ou ret)
-            var initialResponse = await ReadWordAsync(stream, cancellationToken);
+            var initialResponse = await ReadWordAsync(stream, timeoutCts.Token).ConfigureAwait(false);
             _logger?.LogDebug("Resposta inicial RouterOS: {Response}", initialResponse);
             
             // 3. Enviar comando de login
-            await WriteWordAsync(stream, "/login", cancellationToken);
-            await WriteWordAsync(stream, $"=name={username}", cancellationToken);
-            await WriteWordAsync(stream, $"=password={password}", cancellationToken);
+            await WriteWordAsync(stream, "/login", timeoutCts.Token).ConfigureAwait(false);
+            await WriteWordAsync(stream, $"=name={username}", timeoutCts.Token).ConfigureAwait(false);
+            await WriteWordAsync(stream, $"=password={password}", timeoutCts.Token).ConfigureAwait(false);
             
             // 4. Ler todas as respostas até encontrar !done ou !trap
             var isAuthenticated = false;
@@ -65,7 +85,7 @@ public class RouterOsClient : IRouterOsClient
             // Ler até 10 palavras de resposta (limite de segurança)
             for (int i = 0; i < 10; i++)
             {
-                var response = await ReadWordAsync(stream, cancellationToken);
+                var response = await ReadWordAsync(stream, timeoutCts.Token).ConfigureAwait(false);
                 if (response == null) break;
                 
                 responses.Add(response);
@@ -93,17 +113,71 @@ public class RouterOsClient : IRouterOsClient
                 _logger?.LogInformation("Autenticação RouterOS bem-sucedida para {Username} em {Host}:{Port}", username, host, port);
             }
             
-            client.Close();
+            try
+            {
+                client.Close();
+            }
+            catch
+            {
+                // Ignorar erros ao fechar
+            }
+            
             return isAuthenticated;
+        }
+        catch (OperationCanceledException) when (timeoutCts.Token.IsCancellationRequested)
+        {
+            _logger?.LogWarning("Timeout ao testar conexão RouterOS: {ApiUrl} (timeout: {Timeout}s). A operação foi cancelada para não travar a API.", 
+                apiUrl, timeoutSeconds);
+            return false;
+        }
+        catch (TaskCanceledException)
+        {
+            _logger?.LogWarning("Timeout ao testar conexão RouterOS: {ApiUrl} (timeout: {Timeout}s). A operação foi cancelada para não travar a API.", 
+                apiUrl, timeoutSeconds);
+            return false;
         }
         catch (SocketException ex)
         {
-            _logger?.LogWarning(ex, "Erro de conexão ao testar RouterOS: {ApiUrl} - {Error}", apiUrl, ex.Message);
+            string errorMessage;
+            var hostPort = (string.IsNullOrEmpty(host) || port == 0) ? apiUrl : $"{host}:{port}";
+            
+            switch (ex.SocketErrorCode)
+            {
+                case SocketError.ConnectionRefused:
+                    if (port > 0)
+                    {
+                        errorMessage = $"Conexão recusada na porta {port}. Verifique se:\n" +
+                            $"1. O serviço da API RouterOS está habilitado no Mikrotik: /ip service enable api\n" +
+                            $"2. A porta {port} está aberta no firewall do Mikrotik\n" +
+                            $"3. O IP {host} está correto e acessível via VPN\n" +
+                            $"4. O firewall do Mikrotik permite conexões na porta {port}";
+                    }
+                    else
+                    {
+                        errorMessage = $"Conexão recusada em {apiUrl}. Verifique se o serviço da API RouterOS está habilitado.";
+                    }
+                    break;
+                case SocketError.TimedOut:
+                    errorMessage = $"Timeout ao conectar em {hostPort}. Verifique se o router está acessível.";
+                    break;
+                case SocketError.HostUnreachable:
+                    errorMessage = $"Host {hostPort} não está acessível. Verifique a conectividade de rede e rotas.";
+                    break;
+                case SocketError.NetworkUnreachable:
+                    errorMessage = $"Rede não acessível para {hostPort}. Verifique a rota de rede.";
+                    break;
+                default:
+                    errorMessage = $"Erro de socket: {ex.SocketErrorCode} - {ex.Message}";
+                    break;
+            }
+            
+            _logger?.LogWarning(ex, "Erro de conexão ao testar RouterOS: {ApiUrl} ({HostPort}) - {ErrorMessage}", 
+                apiUrl, hostPort, errorMessage);
             return false;
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Erro ao testar conexão RouterOS: {ApiUrl}", apiUrl);
+            _logger?.LogWarning(ex, "Erro ao testar conexão RouterOS: {ApiUrl} - {Error}", apiUrl, ex.Message);
             return false;
         }
     }
@@ -112,12 +186,16 @@ public class RouterOsClient : IRouterOsClient
     {
         try
         {
+            // Verificar se foi cancelado antes de começar
+            cancellationToken.ThrowIfCancellationRequested();
+            
             // Ler comprimento da palavra (4 bytes, little-endian)
             var lengthBytes = new byte[4];
             var totalRead = 0;
             while (totalRead < 4)
             {
-                var bytesRead = await stream.ReadAsync(lengthBytes, totalRead, 4 - totalRead, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                var bytesRead = await stream.ReadAsync(lengthBytes, totalRead, 4 - totalRead, cancellationToken).ConfigureAwait(false);
                 if (bytesRead == 0)
                     return null;
                 totalRead += bytesRead;
@@ -138,13 +216,19 @@ public class RouterOsClient : IRouterOsClient
             totalRead = 0;
             while (totalRead < length)
             {
-                var bytesRead = await stream.ReadAsync(wordBytes, totalRead, length - totalRead, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                var bytesRead = await stream.ReadAsync(wordBytes, totalRead, length - totalRead, cancellationToken).ConfigureAwait(false);
                 if (bytesRead == 0)
                     return null;
                 totalRead += bytesRead;
             }
             
             return Encoding.UTF8.GetString(wordBytes);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger?.LogDebug("Leitura de palavra RouterOS cancelada (timeout)");
+            return null;
         }
         catch (Exception ex)
         {
@@ -155,15 +239,25 @@ public class RouterOsClient : IRouterOsClient
     
     private async Task WriteWordAsync(NetworkStream stream, string word, CancellationToken cancellationToken)
     {
-        var wordBytes = Encoding.UTF8.GetBytes(word);
-        var lengthBytes = BitConverter.GetBytes(wordBytes.Length);
-        
-        await stream.WriteAsync(lengthBytes, 0, 4, cancellationToken);
-        if (wordBytes.Length > 0)
+        try
         {
-            await stream.WriteAsync(wordBytes, 0, wordBytes.Length, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            var wordBytes = Encoding.UTF8.GetBytes(word);
+            var lengthBytes = BitConverter.GetBytes(wordBytes.Length);
+            
+            await stream.WriteAsync(lengthBytes, 0, 4, cancellationToken).ConfigureAwait(false);
+            if (wordBytes.Length > 0)
+            {
+                await stream.WriteAsync(wordBytes, 0, wordBytes.Length, cancellationToken).ConfigureAwait(false);
+            }
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
-        await stream.FlushAsync(cancellationToken);
+        catch (OperationCanceledException)
+        {
+            _logger?.LogDebug("Escrita de palavra RouterOS cancelada (timeout)");
+            throw;
+        }
     }
 
     public async Task<RouterOsSystemInfo> GetSystemInfoAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default)

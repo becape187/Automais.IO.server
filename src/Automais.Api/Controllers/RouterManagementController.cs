@@ -159,7 +159,8 @@ public class RouterManagementController : ControllerBase
             var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
             if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
-            var (router, apiUrl) = routerData;
+            var router = routerData.Value.router;
+            var apiUrl = routerData.Value.apiUrl;
             var rules = await _routerOsClient.ExecuteCommandAsync(
                 apiUrl,
                 router.RouterOsApiUsername!,
@@ -187,7 +188,8 @@ public class RouterManagementController : ControllerBase
             var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
             if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
-            var (router, apiUrl) = routerData;
+            var router = routerData.Value.router;
+            var apiUrl = routerData.Value.apiUrl;
             var rules = await _routerOsClient.ExecuteCommandAsync(
                 apiUrl,
                 router.RouterOsApiUsername!,
@@ -215,7 +217,8 @@ public class RouterManagementController : ControllerBase
             var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
             if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
-            var (router, apiUrl) = routerData;
+            var router = routerData.Value.router;
+            var apiUrl = routerData.Value.apiUrl;
             var routes = await _routerOsClient.ExecuteCommandAsync(
                 apiUrl,
                 router.RouterOsApiUsername!,
@@ -243,7 +246,8 @@ public class RouterManagementController : ControllerBase
             var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
             if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
-            var (router, apiUrl) = routerData;
+            var router = routerData.Value.router;
+            var apiUrl = routerData.Value.apiUrl;
             var interfaces = await _routerOsClient.ExecuteCommandAsync(
                 apiUrl,
                 router.RouterOsApiUsername!,
@@ -274,7 +278,8 @@ public class RouterManagementController : ControllerBase
             var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
             if (routerData == null) return NotFound(new { message = "Router não encontrado" });
 
-            var (router, apiUrl) = routerData;
+            var router = routerData.Value.router;
+            var apiUrl = routerData.Value.apiUrl;
 
             if (string.IsNullOrWhiteSpace(dto.Command))
             {

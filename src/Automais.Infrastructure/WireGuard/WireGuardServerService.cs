@@ -295,26 +295,20 @@ public class WireGuardServerService : IWireGuardServerService
                 $"Certifique-se de que o router foi criado com uma rede VPN (vpnNetworkId) e que o peer foi provisionado corretamente.");
         }
 
-        _logger?.LogDebug("Obtendo configuração VPN para router {RouterId}. Peer ID: {PeerId}, ConfigContent vazio: {IsEmpty}", 
-            routerId, peer.Id, string.IsNullOrEmpty(peer.ConfigContent));
+        _logger?.LogDebug("Obtendo configuração VPN para router {RouterId}. Peer ID: {PeerId}", 
+            routerId, peer.Id);
 
-        // Se já tem config salva, retorna
-        if (!string.IsNullOrEmpty(peer.ConfigContent))
+        // Buscar a VpnNetwork para garantir que temos o ServerEndpoint atualizado
+        var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(peer.VpnNetworkId, cancellationToken);
+        if (vpnNetwork == null)
         {
-            _logger?.LogDebug("Retornando configuração VPN salva para router {RouterId}", routerId);
-            
-            // Sanitizar o nome do router para o nome do arquivo
-            var sanitizedRouterName = SanitizeFileName(router.Name);
-            
-            return new RouterWireGuardConfigDto
-            {
-                ConfigContent = peer.ConfigContent,
-                FileName = $"router_{sanitizedRouterName}_{routerId}.conf"
-            };
+            throw new KeyNotFoundException($"Rede VPN com ID {peer.VpnNetworkId} não encontrada.");
         }
 
-        // Senão, gera e salva
-        _logger?.LogInformation("Gerando nova configuração VPN para router {RouterId}", routerId);
+        // Sempre regenerar o config para garantir que está usando o ServerEndpoint atual da VPN
+        // (o endpoint pode ter sido alterado na VPN e o ConfigContent antigo pode estar desatualizado)
+        _logger?.LogInformation("Regenerando configuração VPN para router {RouterId} (endpoint: {Endpoint})", 
+            routerId, vpnNetwork.ServerEndpoint ?? _wireGuardSettings.DefaultServerEndpoint);
         return await GenerateAndSaveConfigAsync(routerId, cancellationToken);
     }
 
@@ -1119,6 +1113,7 @@ public class WireGuardServerService : IWireGuardServerService
         
         // Seção [Interface] - Configuração do cliente (router)
         sb.AppendLine("# Configuração VPN para Router");
+        sb.AppendLine();
         sb.AppendLine($"# Router: {router.Name}");
         sb.AppendLine($"# Gerado em: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
         sb.AppendLine();

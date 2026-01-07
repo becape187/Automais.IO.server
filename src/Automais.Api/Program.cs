@@ -10,6 +10,7 @@ using Automais.Infrastructure.WireGuard;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -273,8 +274,8 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
     var routerRepo = sp.GetRequiredService<IRouterRepository>();
     var vpnNetworkRepo = sp.GetRequiredService<IVpnNetworkRepository>();
     var wireGuardServerService = sp.GetRequiredService<IWireGuardServerService>();
-    var wireGuardSettings = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<WireGuardSettings>>();
-    var logger = sp.GetService<Microsoft.Extensions.Logging.ILogger<Automais.Core.Services.RouterWireGuardService>>();
+    var wireGuardSettings = sp.GetRequiredService<IOptions<WireGuardSettings>>();
+    var logger = sp.GetService<ILogger<Automais.Core.Services.RouterWireGuardService>>();
     return new Automais.Core.Services.RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, wireGuardServerService, logger);
 });
 

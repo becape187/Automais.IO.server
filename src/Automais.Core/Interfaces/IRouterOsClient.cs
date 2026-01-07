@@ -15,6 +15,16 @@ public interface IRouterOsClient
     /// Cria um usuário no RouterOS com senha forte
     /// </summary>
     Task CreateUserAsync(string apiUrl, string username, string password, string newUsername, string newPassword, CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Executa um comando RouterOS e retorna os resultados como lista de dicionários
+    /// </summary>
+    Task<List<Dictionary<string, string>>> ExecuteCommandAsync(string apiUrl, string username, string password, string command, CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Executa um comando RouterOS que não retorna dados (add, set, remove, etc)
+    /// </summary>
+    Task ExecuteCommandNoResultAsync(string apiUrl, string username, string password, string command, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

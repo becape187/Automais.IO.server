@@ -72,21 +72,15 @@ public class RouterService : IRouterService
             // Por enquanto, a validação será feita pelo Entity Framework (foreign key constraint)
         }
 
-        if (!string.IsNullOrWhiteSpace(dto.SerialNumber))
-        {
-            if (await _routerRepository.SerialNumberExistsAsync(dto.SerialNumber, cancellationToken))
-            {
-                throw new InvalidOperationException($"Serial number '{dto.SerialNumber}' já está em uso.");
-            }
-        }
-
         var router = new Router
         {
             Id = Guid.NewGuid(),
             TenantId = tenantId,
             Name = dto.Name,
-            SerialNumber = dto.SerialNumber,
-            Model = dto.Model,
+            // SerialNumber, Model e FirmwareVersion serão preenchidos automaticamente via API RouterOS
+            SerialNumber = null,
+            Model = null,
+            FirmwareVersion = null,
             RouterOsApiUrl = dto.RouterOsApiUrl,
             RouterOsApiUsername = dto.RouterOsApiUsername,
             RouterOsApiPassword = dto.RouterOsApiPassword, // TODO: Criptografar senha
@@ -141,22 +135,8 @@ public class RouterService : IRouterService
             router.Name = dto.Name;
         }
 
-        if (dto.SerialNumber != null)
-        {
-            if (dto.SerialNumber != router.SerialNumber)
-            {
-                if (await _routerRepository.SerialNumberExistsAsync(dto.SerialNumber, cancellationToken))
-                {
-                    throw new InvalidOperationException($"Serial number '{dto.SerialNumber}' já está em uso.");
-                }
-                router.SerialNumber = dto.SerialNumber;
-            }
-        }
-
-        if (dto.Model != null)
-        {
-            router.Model = dto.Model;
-        }
+        // SerialNumber, Model e FirmwareVersion não podem ser editados manualmente
+        // Eles são atualizados automaticamente via API RouterOS quando conecta
 
         if (dto.RouterOsApiUrl != null)
         {
@@ -230,10 +210,43 @@ public class RouterService : IRouterService
         router.LastSeenAt = isConnected ? DateTime.UtcNow : router.LastSeenAt;
         router.UpdatedAt = DateTime.UtcNow;
 
-        // Se conectou e ainda não criou o usuário automais-io-api, criar agora
-        if (isConnected && !router.AutomaisApiUserCreated)
+        // Se conectou, buscar informações do sistema (Model, SerialNumber, FirmwareVersion)
+        if (isConnected)
         {
-            await CreateAutomaisApiUserAsync(router, cancellationToken);
+            try
+            {
+                var systemInfo = await _routerOsClient.GetSystemInfoAsync(
+                    router.RouterOsApiUrl,
+                    router.RouterOsApiUsername,
+                    router.RouterOsApiPassword,
+                    cancellationToken);
+
+                // Atualizar apenas se não estiverem preenchidos ou se vierem novos dados
+                if (!string.IsNullOrWhiteSpace(systemInfo.Model))
+                {
+                    router.Model = systemInfo.Model;
+                }
+                if (!string.IsNullOrWhiteSpace(systemInfo.SerialNumber))
+                {
+                    router.SerialNumber = systemInfo.SerialNumber;
+                }
+                if (!string.IsNullOrWhiteSpace(systemInfo.FirmwareVersion))
+                {
+                    router.FirmwareVersion = systemInfo.FirmwareVersion;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Logar erro mas não falhar o teste de conexão
+                // TODO: Adicionar logging quando tiver ILogger
+                // Por enquanto, apenas continua sem atualizar essas informações
+            }
+
+            // Se conectou e ainda não criou o usuário automais-io-api, criar agora
+            if (!router.AutomaisApiUserCreated)
+            {
+                await CreateAutomaisApiUserAsync(router, cancellationToken);
+            }
         }
 
         var updated = await _routerRepository.UpdateAsync(router, cancellationToken);
@@ -259,6 +272,7 @@ public class RouterService : IRouterService
 
             // Atualizar router com credenciais do automais-io-api
             router.RouterOsApiUsername = username;
+            router.RouterOsApiPassword = password; // Atualizar também o RouterOsApiPassword
             router.AutomaisApiPassword = password; // Texto plano inicialmente
             router.AutomaisApiUserCreated = true;
             router.UpdatedAt = DateTime.UtcNow;

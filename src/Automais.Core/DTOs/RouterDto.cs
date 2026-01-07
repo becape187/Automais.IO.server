@@ -34,7 +34,15 @@ public class RouterDto
 public class CreateRouterDto
 {
     public string Name { get; set; } = string.Empty;
+    /// <summary>
+    /// OBSOLETO: SerialNumber é obtido automaticamente via API RouterOS na conexão
+    /// </summary>
+    [Obsolete("SerialNumber é obtido automaticamente via API RouterOS")]
     public string? SerialNumber { get; set; }
+    /// <summary>
+    /// OBSOLETO: Model é obtido automaticamente via API RouterOS na conexão
+    /// </summary>
+    [Obsolete("Model é obtido automaticamente via API RouterOS")]
     public string? Model { get; set; }
     public string? RouterOsApiUrl { get; set; }
     public string? RouterOsApiUsername { get; set; }
@@ -58,7 +66,15 @@ public class CreateRouterDto
 public class UpdateRouterDto
 {
     public string? Name { get; set; }
+    /// <summary>
+    /// OBSOLETO: SerialNumber não pode ser editado manualmente - é obtido via API RouterOS
+    /// </summary>
+    [Obsolete("SerialNumber não pode ser editado manualmente")]
     public string? SerialNumber { get; set; }
+    /// <summary>
+    /// OBSOLETO: Model não pode ser editado manualmente - é obtido via API RouterOS
+    /// </summary>
+    [Obsolete("Model não pode ser editado manualmente")]
     public string? Model { get; set; }
     public string? RouterOsApiUrl { get; set; }
     public string? RouterOsApiUsername { get; set; }

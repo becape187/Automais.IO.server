@@ -38,9 +38,34 @@ public class RouterOsClient : IRouterOsClient
     public async Task<RouterOsSystemInfo> GetSystemInfoAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default)
     {
         // TODO: Implementar usando biblioteca RouterOS API (ex: RouterOS.API)
-        // Por enquanto retorna objeto vazio
-        await Task.CompletedTask;
-        return new RouterOsSystemInfo();
+        // Por enquanto, tenta buscar informações básicas via comandos
+        // Comandos RouterOS:
+        // /system/identity/print - retorna nome
+        // /system/resource/print - retorna model, version, serial-number, etc
+        
+        _logger?.LogInformation("Buscando informações do sistema RouterOS via {ApiUrl}", apiUrl);
+        
+        try
+        {
+            // Tentar buscar informações via comandos genéricos
+            // Por enquanto retorna objeto vazio - precisa implementar com biblioteca RouterOS.API
+            var systemInfo = new RouterOsSystemInfo();
+            
+            // Quando implementar com biblioteca RouterOS.API:
+            // var resource = await ExecuteCommandAsync(apiUrl, username, password, "/system/resource/print", cancellationToken);
+            // systemInfo.Model = resource.FirstOrDefault()?.GetValueOrDefault("board-name");
+            // systemInfo.SerialNumber = resource.FirstOrDefault()?.GetValueOrDefault("serial-number");
+            // systemInfo.FirmwareVersion = resource.FirstOrDefault()?.GetValueOrDefault("version");
+            
+            await Task.CompletedTask;
+            return systemInfo;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Erro ao buscar informações do sistema RouterOS");
+            // Retornar objeto vazio em caso de erro - não falhar
+            return new RouterOsSystemInfo();
+        }
     }
 
     public async Task<string> ExportConfigAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default)
@@ -88,6 +113,29 @@ public class RouterOsClient : IRouterOsClient
         
         // TODO: Implementar quando tiver biblioteca RouterOS.API
         // throw new NotImplementedException("CreateUserAsync precisa ser implementado com biblioteca RouterOS.API");
+    }
+
+    public async Task<List<Dictionary<string, string>>> ExecuteCommandAsync(string apiUrl, string username, string password, string command, CancellationToken cancellationToken = default)
+    {
+        // TODO: Implementar usando biblioteca RouterOS API (ex: RouterOS.API ou Mikrotik.API)
+        // Por enquanto retorna lista vazia - precisa implementar protocolo RouterOS API
+        _logger?.LogWarning("ExecuteCommandAsync ainda não está completamente implementado. Comando: {Command}", command);
+        
+        await Task.CompletedTask;
+        
+        // Placeholder - retornar lista vazia por enquanto
+        // Quando implementar, usar biblioteca RouterOS.API para executar comandos
+        return new List<Dictionary<string, string>>();
+    }
+
+    public async Task ExecuteCommandNoResultAsync(string apiUrl, string username, string password, string command, CancellationToken cancellationToken = default)
+    {
+        // TODO: Implementar usando biblioteca RouterOS API
+        _logger?.LogWarning("ExecuteCommandNoResultAsync ainda não está completamente implementado. Comando: {Command}", command);
+        
+        await Task.CompletedTask;
+        
+        // Placeholder - quando implementar, usar biblioteca RouterOS.API
     }
 
     private (string host, int port) ParseApiUrl(string apiUrl)

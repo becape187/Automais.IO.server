@@ -254,6 +254,9 @@ public class ApplicationDbContext : DbContext
             entity.Property(e => e.ServerPublicKey)
                 .HasMaxLength(200);
 
+            entity.Property(e => e.ServerEndpoint)
+                .HasMaxLength(255);
+
             entity.HasIndex(e => new { e.TenantId, e.Slug })
                 .IsUnique();
 

@@ -1,7 +1,9 @@
+using Automais.Core.Configuration;
 using Automais.Core.DTOs;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -21,18 +23,21 @@ public class WireGuardServerService : IWireGuardServerService
     private readonly IRouterAllowedNetworkRepository _allowedNetworkRepository;
     private readonly IVpnNetworkRepository _vpnNetworkRepository;
     private readonly ILogger<WireGuardServerService>? _logger;
+    private readonly WireGuardSettings _wireGuardSettings;
 
     public WireGuardServerService(
         IRouterRepository routerRepository,
         IRouterWireGuardPeerRepository peerRepository,
         IRouterAllowedNetworkRepository allowedNetworkRepository,
         IVpnNetworkRepository vpnNetworkRepository,
+        IOptions<WireGuardSettings> wireGuardSettings,
         ILogger<WireGuardServerService>? logger = null)
     {
         _routerRepository = routerRepository;
         _peerRepository = peerRepository;
         _allowedNetworkRepository = allowedNetworkRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
+        _wireGuardSettings = wireGuardSettings.Value;
         _logger = logger;
     }
 
@@ -71,6 +76,7 @@ public class WireGuardServerService : IWireGuardServerService
         var allowedIpsString = string.Join(",", allowedIps);
 
         // Criar peer no banco
+        // Nota: Endpoint não é salvo no peer, ele vem da VpnNetwork
         var peer = new RouterWireGuardPeer
         {
             Id = Guid.NewGuid(),
@@ -79,7 +85,7 @@ public class WireGuardServerService : IWireGuardServerService
             PublicKey = publicKey,
             PrivateKey = privateKey, // Texto plano inicialmente
             AllowedIps = routerIp,
-            Endpoint = GetServerPublicIp(),
+            Endpoint = null, // Endpoint vem da VpnNetwork, não é armazenado no peer
             ListenPort = 51820, // TODO: Obter da configuração da VpnNetwork
             IsEnabled = true,
             CreatedAt = DateTime.UtcNow,
@@ -680,11 +686,21 @@ public class WireGuardServerService : IWireGuardServerService
         }
     }
 
-    private string GetServerPublicIp()
+    /// <summary>
+    /// Obtém o endpoint do servidor VPN a partir da VpnNetwork.
+    /// O valor sempre deve vir do banco (salvo quando a VPN foi criada/atualizada pelo frontend).
+    /// Se por algum motivo não estiver configurado, usa o valor padrão da configuração como fallback.
+    /// </summary>
+    private string GetServerEndpoint(VpnNetwork vpnNetwork)
     {
-        // TODO: Obter IP público do servidor da configuração
-        // Por enquanto retorna placeholder
-        return "srv01.automais.io"; // ou IP público real
+        if (!string.IsNullOrWhiteSpace(vpnNetwork.ServerEndpoint))
+        {
+            return vpnNetwork.ServerEndpoint;
+        }
+        // Fallback de segurança: se por algum motivo não tiver no banco, usa o valor da configuração
+        // (mas isso não deveria acontecer se o frontend sempre enviar o valor)
+        _logger?.LogWarning("ServerEndpoint não encontrado na VpnNetwork {VpnNetworkId}, usando valor padrão da configuração", vpnNetwork.Id);
+        return _wireGuardSettings.DefaultServerEndpoint;
     }
 
     /// <summary>
@@ -1138,17 +1154,9 @@ public class WireGuardServerService : IWireGuardServerService
         
         sb.AppendLine($"PublicKey = {serverPublicKey}");
         
-        // Endpoint é obrigatório
-        if (string.IsNullOrWhiteSpace(peer.Endpoint))
-        {
-            var endpoint = GetServerPublicIp();
-            sb.AppendLine($"Endpoint = {endpoint}:{peer.ListenPort ?? 51820}");
-            _logger?.LogWarning("Endpoint não configurado para peer {PeerId}, usando padrão: {Endpoint}", peer.Id, endpoint);
-        }
-        else
-        {
-            sb.AppendLine($"Endpoint = {peer.Endpoint}:{peer.ListenPort ?? 51820}");
-        }
+        // Endpoint sempre vem da VpnNetwork, não do peer
+        var endpoint = GetServerEndpoint(vpnNetwork);
+        sb.AppendLine($"Endpoint = {endpoint}:{peer.ListenPort ?? 51820}");
 
         // Adicionar todas as redes permitidas (se houver)
         var allNetworks = new List<string> { vpnNetwork.Cidr };

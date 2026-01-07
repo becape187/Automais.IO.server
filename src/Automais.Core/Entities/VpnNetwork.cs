@@ -14,6 +14,10 @@ public class VpnNetwork
     public bool IsDefault { get; set; }
     public string? DnsServers { get; set; }
     public string? ServerPublicKey { get; set; }
+    /// <summary>
+    /// Endpoint do servidor VPN (ex: "automais.io"). Se não especificado, usa "automais.io" como padrão.
+    /// </summary>
+    public string? ServerEndpoint { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 

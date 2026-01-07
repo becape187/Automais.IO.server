@@ -1,6 +1,8 @@
+using Automais.Core.Configuration;
 using Automais.Core.DTOs;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
+using Microsoft.Extensions.Options;
 
 namespace Automais.Core.Services;
 
@@ -10,17 +12,20 @@ public class VpnNetworkService : IVpnNetworkService
     private readonly IVpnNetworkRepository _vpnNetworkRepository;
     private readonly IDeviceRepository _deviceRepository;
     private readonly ITenantUserService _tenantUserService;
+    private readonly WireGuardSettings _wireGuardSettings;
 
     public VpnNetworkService(
         ITenantRepository tenantRepository,
         IVpnNetworkRepository vpnNetworkRepository,
         IDeviceRepository deviceRepository,
-        ITenantUserService tenantUserService)
+        ITenantUserService tenantUserService,
+        IOptions<WireGuardSettings> wireGuardSettings)
     {
         _tenantRepository = tenantRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
         _deviceRepository = deviceRepository;
         _tenantUserService = tenantUserService;
+        _wireGuardSettings = wireGuardSettings.Value;
     }
 
     public async Task<IEnumerable<VpnNetworkDto>> GetByTenantAsync(Guid tenantId, CancellationToken cancellationToken = default)
@@ -65,6 +70,12 @@ public class VpnNetworkService : IVpnNetworkService
             Description = dto.Description,
             IsDefault = dto.IsDefault,
             DnsServers = dto.DnsServers,
+            // ServerEndpoint: salva o valor que vier do frontend
+            // Se não vier nada, usa o valor padrão da configuração como fallback de segurança
+            // (mas o ideal é que o frontend sempre envie o valor)
+            ServerEndpoint = !string.IsNullOrWhiteSpace(dto.ServerEndpoint) 
+                ? dto.ServerEndpoint 
+                : _wireGuardSettings.DefaultServerEndpoint,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -99,6 +110,11 @@ public class VpnNetworkService : IVpnNetworkService
         if (dto.DnsServers != null)
         {
             network.DnsServers = dto.DnsServers;
+        }
+
+        if (dto.ServerEndpoint != null)
+        {
+            network.ServerEndpoint = dto.ServerEndpoint;
         }
 
         network.UpdatedAt = DateTime.UtcNow;
@@ -156,6 +172,7 @@ public class VpnNetworkService : IVpnNetworkService
             Description = network.Description,
             IsDefault = network.IsDefault,
             DnsServers = network.DnsServers,
+            ServerEndpoint = network.ServerEndpoint,
             UserCount = userCount,
             DeviceCount = deviceCount,
             CreatedAt = network.CreatedAt,

@@ -1,6 +1,8 @@
+using Automais.Core.Configuration;
 using Automais.Core.DTOs;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
+using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -15,16 +17,19 @@ public class RouterWireGuardService : IRouterWireGuardService
     private readonly IRouterRepository _routerRepository;
     private readonly IVpnNetworkRepository _vpnNetworkRepository;
     private readonly IWireGuardServerService? _wireGuardServerService;
+    private readonly WireGuardSettings _wireGuardSettings;
 
     public RouterWireGuardService(
         IRouterWireGuardPeerRepository peerRepository,
         IRouterRepository routerRepository,
         IVpnNetworkRepository vpnNetworkRepository,
+        IOptions<WireGuardSettings> wireGuardSettings,
         IWireGuardServerService? wireGuardServerService = null)
     {
         _peerRepository = peerRepository;
         _routerRepository = routerRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
+        _wireGuardSettings = wireGuardSettings.Value;
         _wireGuardServerService = wireGuardServerService;
     }
 
@@ -93,6 +98,8 @@ public class RouterWireGuardService : IRouterWireGuardService
         // Gerar par de chaves WireGuard
         var (publicKey, privateKey) = GenerateWireGuardKeys();
 
+        // Criar peer no banco
+        // Nota: Endpoint não é salvo no peer, ele vem da VpnNetwork
         var peer = new RouterWireGuardPeer
         {
             Id = Guid.NewGuid(),
@@ -101,7 +108,7 @@ public class RouterWireGuardService : IRouterWireGuardService
             PublicKey = publicKey,
             PrivateKey = privateKey, // TODO: Criptografar antes de salvar
             AllowedIps = routerIp, // Usar IP validado/alocado
-            Endpoint = dto.Endpoint,
+            Endpoint = null, // Endpoint vem da VpnNetwork, não é armazenado no peer
             ListenPort = dto.ListenPort,
             IsEnabled = true,
             CreatedAt = DateTime.UtcNow,
@@ -121,7 +128,7 @@ public class RouterWireGuardService : IRouterWireGuardService
         }
 
         peer.AllowedIps = dto.AllowedIps;
-        peer.Endpoint = dto.Endpoint;
+        // Endpoint não é atualizado aqui - ele vem da VpnNetwork
         peer.ListenPort = dto.ListenPort;
         peer.UpdatedAt = DateTime.UtcNow;
 
@@ -200,7 +207,7 @@ public class RouterWireGuardService : IRouterWireGuardService
         return (publicKey, privateKey);
     }
 
-    private static string GenerateWireGuardConfig(RouterWireGuardPeer peer, Router router, VpnNetwork vpnNetwork)
+    private string GenerateWireGuardConfig(RouterWireGuardPeer peer, Router router, VpnNetwork vpnNetwork)
     {
         var sb = new StringBuilder();
         sb.AppendLine("[Interface]");
@@ -209,13 +216,30 @@ public class RouterWireGuardService : IRouterWireGuardService
         sb.AppendLine();
         sb.AppendLine("[Peer]");
         sb.AppendLine($"PublicKey = {peer.PublicKey}");
-        if (!string.IsNullOrWhiteSpace(peer.Endpoint))
-        {
-            sb.AppendLine($"Endpoint = {peer.Endpoint}:{peer.ListenPort ?? 51820}");
-        }
+        
+        // Endpoint sempre vem da VpnNetwork, não do peer
+        var endpoint = GetServerEndpoint(vpnNetwork);
+        sb.AppendLine($"Endpoint = {endpoint}:{peer.ListenPort ?? 51820}");
+        
         sb.AppendLine($"AllowedIPs = {vpnNetwork.Cidr}");
         sb.AppendLine("PersistentKeepalive = 25");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Obtém o endpoint do servidor VPN a partir da VpnNetwork.
+    /// O valor sempre deve vir do banco (salvo quando a VPN foi criada/atualizada pelo frontend).
+    /// Se por algum motivo não estiver configurado, usa o valor padrão da configuração como fallback.
+    /// </summary>
+    private string GetServerEndpoint(VpnNetwork vpnNetwork)
+    {
+        if (!string.IsNullOrWhiteSpace(vpnNetwork.ServerEndpoint))
+        {
+            return vpnNetwork.ServerEndpoint;
+        }
+        // Fallback de segurança: se por algum motivo não tiver no banco, usa o valor da configuração
+        // (mas isso não deveria acontecer se o frontend sempre enviar o valor)
+        return _wireGuardSettings.DefaultServerEndpoint;
     }
 
     private static RouterWireGuardPeerDto MapToDto(RouterWireGuardPeer peer)

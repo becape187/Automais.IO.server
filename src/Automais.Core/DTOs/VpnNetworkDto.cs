@@ -10,6 +10,11 @@ public class VpnNetworkDto
     public string? Description { get; set; }
     public bool IsDefault { get; set; }
     public string? DnsServers { get; set; }
+    /// <summary>
+    /// Endpoint do servidor VPN (ex: "automais.io"). 
+    /// O frontend deve sempre enviar este valor (preenchido com "automais.io" por padrão, mas editável).
+    /// </summary>
+    public string? ServerEndpoint { get; set; }
     public int UserCount { get; set; }
     public int DeviceCount { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -24,6 +29,11 @@ public class CreateVpnNetworkDto
     public string? Description { get; set; }
     public bool IsDefault { get; set; }
     public string? DnsServers { get; set; }
+    /// <summary>
+    /// Endpoint do servidor VPN (ex: "automais.io"). 
+    /// O frontend deve sempre enviar este valor (preenchido com "automais.io" por padrão, mas editável).
+    /// </summary>
+    public string? ServerEndpoint { get; set; }
 }
 
 public class UpdateVpnNetworkDto
@@ -32,6 +42,11 @@ public class UpdateVpnNetworkDto
     public string? Description { get; set; }
     public bool? IsDefault { get; set; }
     public string? DnsServers { get; set; }
+    /// <summary>
+    /// Endpoint do servidor VPN (ex: "automais.io"). 
+    /// O frontend deve sempre enviar este valor (preenchido com "automais.io" por padrão, mas editável).
+    /// </summary>
+    public string? ServerEndpoint { get; set; }
 }
 
 

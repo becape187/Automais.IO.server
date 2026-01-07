@@ -1,3 +1,4 @@
+using Automais.Core.Configuration;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 using Automais.Core.Services;
@@ -259,6 +260,10 @@ builder.Services.AddScoped<IGatewayService, GatewayService>();
 builder.Services.AddScoped<ITenantUserService, TenantUserService>();
 builder.Services.AddScoped<IApplicationService, ApplicationService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
+// Configuração do WireGuard
+builder.Services.Configure<WireGuardSettings>(
+    builder.Configuration.GetSection("WireGuard"));
+
 builder.Services.AddScoped<IVpnNetworkService, VpnNetworkService>();
 builder.Services.AddScoped<IRouterService, RouterService>();
 builder.Services.AddScoped<IWireGuardServerService, WireGuardServerService>();
@@ -268,7 +273,8 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
     var routerRepo = sp.GetRequiredService<IRouterRepository>();
     var vpnNetworkRepo = sp.GetRequiredService<IVpnNetworkRepository>();
     var wireGuardServerService = sp.GetRequiredService<IWireGuardServerService>();
-    return new RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardServerService);
+    var wireGuardSettings = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<WireGuardSettings>>();
+    return new RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, wireGuardServerService);
 });
 
 // Serviço de sincronização do WireGuard (executa na inicialização)

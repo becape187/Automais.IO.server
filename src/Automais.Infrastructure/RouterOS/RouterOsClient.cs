@@ -23,16 +23,134 @@ public class RouterOsClient : IRouterOsClient
         try
         {
             var (host, port) = ParseApiUrl(apiUrl);
+            
+            // Tentar conectar e autenticar usando protocolo RouterOS API
             using var client = new TcpClient();
+            client.ReceiveTimeout = 5000;
+            client.SendTimeout = 5000;
             await client.ConnectAsync(host, port);
+            
+            var stream = client.GetStream();
+            
+            // Protocolo RouterOS API:
+            // 1. Enviar palavra vazia para iniciar
+            await WriteWordAsync(stream, "", cancellationToken);
+            
+            // 2. Ler palavra de autenticação inicial (geralmente "!done" ou ret)
+            var initialResponse = await ReadWordAsync(stream, cancellationToken);
+            _logger?.LogDebug("Resposta inicial RouterOS: {Response}", initialResponse);
+            
+            // 3. Enviar comando de login
+            await WriteWordAsync(stream, "/login", cancellationToken);
+            await WriteWordAsync(stream, $"=name={username}", cancellationToken);
+            await WriteWordAsync(stream, $"=password={password}", cancellationToken);
+            
+            // 4. Ler todas as respostas até encontrar !done ou !trap
+            var isAuthenticated = false;
+            var responses = new List<string>();
+            
+            // Ler até 10 palavras de resposta (limite de segurança)
+            for (int i = 0; i < 10; i++)
+            {
+                var response = await ReadWordAsync(stream, cancellationToken);
+                if (response == null) break;
+                
+                responses.Add(response);
+                _logger?.LogDebug("Resposta RouterOS [{Index}]: {Response}", i, response);
+                
+                if (response.StartsWith("!done"))
+                {
+                    isAuthenticated = true;
+                    break;
+                }
+                if (response.StartsWith("!trap"))
+                {
+                    isAuthenticated = false;
+                    break;
+                }
+            }
+            
+            if (!isAuthenticated)
+            {
+                _logger?.LogWarning("Falha na autenticação RouterOS para {Username} em {Host}:{Port}. Respostas: {Responses}", 
+                    username, host, port, string.Join(", ", responses));
+            }
+            else
+            {
+                _logger?.LogInformation("Autenticação RouterOS bem-sucedida para {Username} em {Host}:{Port}", username, host, port);
+            }
+            
             client.Close();
-            return true;
+            return isAuthenticated;
+        }
+        catch (SocketException ex)
+        {
+            _logger?.LogWarning(ex, "Erro de conexão ao testar RouterOS: {ApiUrl} - {Error}", apiUrl, ex.Message);
+            return false;
         }
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Erro ao testar conexão RouterOS: {ApiUrl}", apiUrl);
             return false;
         }
+    }
+    
+    private async Task<string?> ReadWordAsync(NetworkStream stream, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Ler comprimento da palavra (4 bytes, little-endian)
+            var lengthBytes = new byte[4];
+            var totalRead = 0;
+            while (totalRead < 4)
+            {
+                var bytesRead = await stream.ReadAsync(lengthBytes, totalRead, 4 - totalRead, cancellationToken);
+                if (bytesRead == 0)
+                    return null;
+                totalRead += bytesRead;
+            }
+            
+            var length = BitConverter.ToInt32(lengthBytes, 0);
+            if (length == 0)
+                return "";
+            
+            if (length > 8192) // Limite de segurança
+            {
+                _logger?.LogWarning("Palavra RouterOS muito grande: {Length} bytes", length);
+                return null;
+            }
+            
+            // Ler a palavra
+            var wordBytes = new byte[length];
+            totalRead = 0;
+            while (totalRead < length)
+            {
+                var bytesRead = await stream.ReadAsync(wordBytes, totalRead, length - totalRead, cancellationToken);
+                if (bytesRead == 0)
+                    return null;
+                totalRead += bytesRead;
+            }
+            
+            return Encoding.UTF8.GetString(wordBytes);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Erro ao ler palavra do RouterOS");
+            return null;
+        }
+    }
+    
+    private async Task WriteWordAsync(NetworkStream stream, string word, CancellationToken cancellationToken)
+    {
+        var wordBytes = Encoding.UTF8.GetBytes(word);
+        var lengthBytes = BitConverter.GetBytes(wordBytes.Length);
+        
+        await stream.WriteAsync(lengthBytes, 0, 4, cancellationToken);
+        if (wordBytes.Length > 0)
+        {
+            await stream.WriteAsync(wordBytes, 0, wordBytes.Length, cancellationToken);
+        }
+        await stream.FlushAsync(cancellationToken);
     }
 
     public async Task<RouterOsSystemInfo> GetSystemInfoAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default)
@@ -140,14 +258,37 @@ public class RouterOsClient : IRouterOsClient
 
     private (string host, int port) ParseApiUrl(string apiUrl)
     {
-        // Formato esperado: "192.168.1.1:8728" ou "10.100.1.50:8728"
-        var parts = apiUrl.Split(':');
-        if (parts.Length != 2)
-            throw new ArgumentException("Formato inválido de API URL. Esperado: 'host:port'", nameof(apiUrl));
+        // Formato esperado: "192.168.1.1:8728", "http://192.168.1.1:8728", ou "10.100.1.50:8728"
+        if (string.IsNullOrWhiteSpace(apiUrl))
+            throw new ArgumentException("API URL não pode ser vazia", nameof(apiUrl));
 
-        var host = parts[0];
-        if (!int.TryParse(parts[1], out var port))
-            throw new ArgumentException("Porta inválida na API URL", nameof(apiUrl));
+        // Remover protocolo se houver
+        var url = apiUrl.Trim();
+        if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+        {
+            url = url.Substring(7);
+        }
+        else if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            url = url.Substring(8);
+        }
+
+        // Separar host e porta
+        var lastColonIndex = url.LastIndexOf(':');
+        if (lastColonIndex < 0)
+        {
+            // Se não tem porta, usar padrão 8728
+            return (url, 8728);
+        }
+
+        var host = url.Substring(0, lastColonIndex);
+        var portStr = url.Substring(lastColonIndex + 1);
+        
+        if (!int.TryParse(portStr, out var port))
+            throw new ArgumentException($"Porta inválida na API URL: {portStr}", nameof(apiUrl));
+
+        if (port < 1 || port > 65535)
+            throw new ArgumentException($"Porta fora do range válido (1-65535): {port}", nameof(apiUrl));
 
         return (host, port);
     }

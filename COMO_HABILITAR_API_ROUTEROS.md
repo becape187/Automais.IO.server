@@ -58,7 +58,7 @@ Se o serviço está habilitado mas ainda não funciona, pode ser bloqueio do fir
 
 ## 🔍 Verificar se Está Funcionando
 
-### Teste 1: Verificar se o serviço está escutando
+### Teste 1: Verificar se o serviço está escutando (conectividade básica)
 
 ```bash
 # No servidor Linux, teste se a porta está aberta
@@ -69,6 +69,38 @@ nc -zv 10.222.111.2 8728
 
 # Se conectar, você verá algo como:
 # Connected to 10.222.111.2
+# (mas não conseguirá enviar comandos via telnet porque o protocolo é binário)
+```
+
+**⚠️ IMPORTANTE**: O telnet só testa conectividade. O RouterOS API usa protocolo binário, então você não conseguirá enviar comandos via telnet.
+
+### Teste 2: Testar API RouterOS com script Python
+
+Use o script `test_routeros_api.py` para testar a API propriamente:
+
+```bash
+# No servidor Ubuntu
+cd /caminho/para/projeto
+python3 test_routeros_api.py 10.222.111.2 8728 automais senha123
+```
+
+O script vai:
+1. Conectar na porta 8728
+2. Enviar palavra vazia (protocolo RouterOS API)
+3. Enviar comando de login
+4. Verificar se autenticação foi bem-sucedida
+
+**Saída esperada:**
+```
+Conectando ao 10.222.111.2:8728...
+✅ Conexão TCP estabelecida!
+Enviando palavra vazia...
+Lendo resposta inicial...
+Resposta inicial: (pode ser vazio ou !done)
+Enviando comando de login...
+Lendo respostas de login...
+  Resposta [0]: !done
+✅ Login bem-sucedido!
 ```
 
 ### Teste 2: Verificar no Mikrotik

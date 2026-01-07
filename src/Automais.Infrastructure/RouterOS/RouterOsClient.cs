@@ -1,5 +1,6 @@
 using Automais.Core.Interfaces;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 
@@ -66,17 +67,30 @@ public class RouterOsClient : IRouterOsClient
             var stream = client.GetStream();
             
             // Protocolo RouterOS API:
-            // 1. Enviar palavra vazia para iniciar
+            // 1. Enviar palavra vazia para iniciar (alguns servidores esperam isso)
             await WriteWordAsync(stream, "", timeoutCts.Token).ConfigureAwait(false);
             
-            // 2. Ler palavra de autenticação inicial (geralmente "!done" ou ret)
-            var initialResponse = await ReadWordAsync(stream, timeoutCts.Token).ConfigureAwait(false);
-            _logger?.LogDebug("Resposta inicial RouterOS: {Response}", initialResponse);
+            // 2. Tentar ler resposta inicial (pode não haver resposta imediata)
+            // Usar Task.WhenAny para não travar se não houver resposta
+            var readInitialTask = ReadWordAsync(stream, timeoutCts.Token);
+            var delayTask = Task.Delay(500, timeoutCts.Token); // Esperar até 500ms por resposta inicial
+            var initialCompleted = await Task.WhenAny(readInitialTask, delayTask).ConfigureAwait(false);
+            
+            if (initialCompleted == readInitialTask)
+            {
+                var initialResponse = await readInitialTask.ConfigureAwait(false);
+                _logger?.LogDebug("Resposta inicial RouterOS: {Response}", initialResponse ?? "(null)");
+            }
+            else
+            {
+                _logger?.LogDebug("Nenhuma resposta inicial do RouterOS (normal)");
+            }
             
             // 3. Enviar comando de login
             await WriteWordAsync(stream, "/login", timeoutCts.Token).ConfigureAwait(false);
             await WriteWordAsync(stream, $"=name={username}", timeoutCts.Token).ConfigureAwait(false);
             await WriteWordAsync(stream, $"=password={password}", timeoutCts.Token).ConfigureAwait(false);
+            await WriteWordAsync(stream, "", timeoutCts.Token).ConfigureAwait(false); // Finalizar comando
             
             // 4. Ler todas as respostas até encontrar !done ou !trap
             var isAuthenticated = false;
@@ -86,7 +100,11 @@ public class RouterOsClient : IRouterOsClient
             for (int i = 0; i < 10; i++)
             {
                 var response = await ReadWordAsync(stream, timeoutCts.Token).ConfigureAwait(false);
-                if (response == null) break;
+                if (response == null) 
+                {
+                    _logger?.LogDebug("Nenhuma resposta adicional (i={I})", i);
+                    break;
+                }
                 
                 responses.Add(response);
                 _logger?.LogDebug("Resposta RouterOS [{Index}]: {Response}", i, response);
@@ -99,6 +117,8 @@ public class RouterOsClient : IRouterOsClient
                 if (response.StartsWith("!trap"))
                 {
                     isAuthenticated = false;
+                    var trapMessage = responses.FirstOrDefault(r => r.StartsWith("=message="));
+                    _logger?.LogWarning("RouterOS retornou !trap: {Message}", trapMessage ?? "sem mensagem");
                     break;
                 }
             }

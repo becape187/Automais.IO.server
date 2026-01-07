@@ -257,9 +257,9 @@ public class WireGuardSyncService : IHostedService
         var interfaceName = GetInterfaceName(vpnNetworkId);
         var configPath = $"/etc/wireguard/{interfaceName}.conf";
 
-        // 1. Fazer DOWN da interface se estiver ativa (para garantir limpeza)
-        await DownInterfaceIfActiveAsync(interfaceName, cancellationToken);
-
+        // 1. Verificar se a interface está ativa
+        bool interfaceIsActive = await IsInterfaceActiveAsync(interfaceName, cancellationToken);
+        
         // 2. Garantir que a interface existe (cria arquivo base com chaves do banco)
         await EnsureInterfaceExistsAsync(interfaceName, vpnNetwork, cancellationToken);
 
@@ -270,7 +270,7 @@ public class WireGuardSyncService : IHostedService
         {
             _logger.LogInformation("VpnNetwork {VpnNetworkId} não possui peers. Interface base criada.", vpnNetworkId);
             // Ativar interface mesmo sem peers (pode receber peers depois)
-            await UpInterfaceAsync(interfaceName, cancellationToken);
+            await SyncInterfaceFromFileAsync(interfaceName, interfaceIsActive, cancellationToken);
             return;
         }
 
@@ -279,8 +279,8 @@ public class WireGuardSyncService : IHostedService
         // 4. Recriar arquivo .conf COMPLETO com todos os peers do banco
         await RecreateConfigFileWithAllPeersAsync(interfaceName, vpnNetwork, peers, cancellationToken);
 
-        // 5. Fazer UP da interface (recarrega tudo)
-        await UpInterfaceAsync(interfaceName, cancellationToken);
+        // 5. Sincronizar interface com arquivo (usa syncconf se ativa, ou up se inativa)
+        await SyncInterfaceFromFileAsync(interfaceName, interfaceIsActive, cancellationToken);
         
         _logger.LogInformation("✅ VpnNetwork {VpnNetworkId} sincronizada com sucesso (reload completo)", vpnNetworkId);
     }
@@ -476,9 +476,105 @@ public class WireGuardSyncService : IHostedService
     }
 
     /// <summary>
-    /// Faz UP da interface (ativa/reload)
+    /// Verifica se a interface está ativa
     /// </summary>
-    private async Task UpInterfaceAsync(string interfaceName, CancellationToken cancellationToken)
+    private async Task<bool> IsInterfaceActiveAsync(string interfaceName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var checkProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = $"show {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+            return checkProcess.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Sincroniza a interface com o arquivo de configuração.
+    /// Se a interface está ativa, usa wg syncconf (sem interrupção).
+    /// Se está inativa, usa wg-quick up (ativa).
+    /// </summary>
+    private async Task SyncInterfaceFromFileAsync(
+        string interfaceName, 
+        bool interfaceIsActive,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configPath = $"/etc/wireguard/{interfaceName}.conf";
+            
+            if (!System.IO.File.Exists(configPath))
+            {
+                _logger.LogWarning("Arquivo de configuração {ConfigPath} não existe. Não é possível sincronizar interface.", configPath);
+                return;
+            }
+
+            if (interfaceIsActive)
+            {
+                // Interface já está ativa - usar syncconf para sincronizar sem interrupção
+                _logger.LogInformation("Sincronizando interface WireGuard {InterfaceName} com arquivo (sem interrupção)...", interfaceName);
+                
+                var syncProcess = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "/usr/bin/wg",
+                        Arguments = $"syncconf {interfaceName} {configPath}",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                syncProcess.Start();
+                var syncOutput = await syncProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+                var syncError = await syncProcess.StandardError.ReadToEndAsync(cancellationToken);
+                await syncProcess.WaitForExitAsync(cancellationToken);
+
+                if (syncProcess.ExitCode == 0)
+                {
+                    _logger.LogInformation("✅ Interface WireGuard {InterfaceName} sincronizada com sucesso", interfaceName);
+                }
+                else
+                {
+                    _logger.LogWarning("Erro ao sincronizar interface {InterfaceName}: {Error}. Tentando down/up...", interfaceName, syncError);
+                    // Fallback: fazer down e up
+                    await DownInterfaceIfActiveAsync(interfaceName, cancellationToken);
+                    await UpInterfaceAsync(interfaceName, cancellationToken);
+                }
+            }
+            else
+            {
+                // Interface não está ativa - fazer up
+                await UpInterfaceAsync(interfaceName, cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao sincronizar interface WireGuard {InterfaceName}", interfaceName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Faz UP da interface (ativa)
+    /// </summary>
+    private async Task UpInterfaceAsync(string interfaceName, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -507,6 +603,33 @@ public class WireGuardSyncService : IHostedService
             }
             else
             {
+                // Se o erro é "already exists", a interface já está ativa - usar syncconf
+                if (upError.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning("Interface {InterfaceName} já existe. Sincronizando com arquivo...", interfaceName);
+                    var configPath = $"/etc/wireguard/{interfaceName}.conf";
+                    var syncProcess = new System.Diagnostics.Process
+                    {
+                        StartInfo = new System.Diagnostics.ProcessStartInfo
+                        {
+                            FileName = "/usr/bin/wg",
+                            Arguments = $"syncconf {interfaceName} {configPath}",
+                            UseShellExecute = false,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            CreateNoWindow = true
+                        }
+                    };
+                    syncProcess.Start();
+                    await syncProcess.WaitForExitAsync(cancellationToken);
+                    
+                    if (syncProcess.ExitCode == 0)
+                    {
+                        _logger.LogInformation("✅ Interface WireGuard {InterfaceName} sincronizada com sucesso", interfaceName);
+                        return;
+                    }
+                }
+                
                 _logger.LogError("❌ Erro ao ativar interface WireGuard {InterfaceName}: {Error}", interfaceName, upError);
                 throw new InvalidOperationException($"Falha ao ativar interface {interfaceName}: {upError}");
             }

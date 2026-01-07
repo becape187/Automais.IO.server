@@ -115,13 +115,22 @@ public class WireGuardServerService : IWireGuardServerService
         // Garantir que a interface existe (criar arquivo de configuração inicial se necessário)
         await EnsureInterfaceExistsAsync(interfaceName, vpnNetwork, cancellationToken);
         
-        // Adicionar peer à interface
+        _logger?.LogInformation("Adicionando peer {PublicKey} à interface {InterfaceName} com allowed-ips {AllowedIps}", 
+            publicKey, interfaceName, allowedIpsString);
+        
+        // Adicionar peer à interface (temporário - será persistido no arquivo)
         await ExecuteWireGuardCommandAsync(
             $"set {interfaceName} peer {publicKey} allowed-ips {allowedIpsString}"
         );
 
-        // Salvar configuração persistente no arquivo
+        // IMPORTANTE: Adicionar peer no arquivo .conf do servidor para persistência
+        await AddPeerToServerConfigFileAsync(interfaceName, publicKey, allowedIpsString, cancellationToken);
+
+        // Salvar configuração persistente (wg-quick save - sincroniza arquivo com interface ativa)
         await SaveWireGuardConfigAsync(interfaceName);
+        
+        // Recarregar interface para garantir que o peer está ativo
+        await ReloadInterfaceAsync(interfaceName, cancellationToken);
 
         // Gerar e salvar arquivo .conf
         var config = await GenerateConfigContentAsync(router, peer, vpnNetwork, allowedNetworks, cancellationToken);
@@ -456,6 +465,210 @@ public class WireGuardServerService : IWireGuardServerService
         {
             _logger?.LogError(ex, "Exceção ao executar comando WireGuard: {Command}", command);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Adiciona um peer no arquivo de configuração do servidor (.conf)
+    /// Isso garante que o peer seja persistido mesmo após reinicialização
+    /// </summary>
+    private async Task AddPeerToServerConfigFileAsync(
+        string interfaceName,
+        string peerPublicKey,
+        string allowedIps,
+        CancellationToken cancellationToken = default)
+    {
+        var configPath = $"/etc/wireguard/{interfaceName}.conf";
+        
+        if (!File.Exists(configPath))
+        {
+            _logger?.LogWarning("Arquivo de configuração {ConfigPath} não existe. Peer não será adicionado ao arquivo.", configPath);
+            return;
+        }
+
+        try
+        {
+            var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
+            var configContent = new StringBuilder();
+            bool peerAlreadyExists = false;
+
+            foreach (var line in configLines)
+            {
+                configContent.AppendLine(line);
+                
+                // Verificar se o peer já existe
+                if (line.Contains(peerPublicKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    peerAlreadyExists = true;
+                }
+            }
+
+            // Se o peer não existe, adicionar
+            if (!peerAlreadyExists)
+            {
+                configContent.AppendLine();
+                configContent.AppendLine("# Peer adicionado automaticamente pela API");
+                configContent.AppendLine("[Peer]");
+                configContent.AppendLine($"PublicKey = {peerPublicKey}");
+                configContent.AppendLine($"AllowedIPs = {allowedIps}");
+                configContent.AppendLine("PersistentKeepalive = 25");
+
+                await File.WriteAllTextAsync(configPath, configContent.ToString(), cancellationToken);
+                
+                // Definir permissões corretas
+                var chmodProcess = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "/bin/chmod",
+                        Arguments = $"600 {configPath}",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                chmodProcess.Start();
+                await chmodProcess.WaitForExitAsync(cancellationToken);
+
+                _logger?.LogInformation("Peer {PublicKey} adicionado ao arquivo de configuração {ConfigPath}", 
+                    peerPublicKey, configPath);
+            }
+            else
+            {
+                _logger?.LogDebug("Peer {PublicKey} já existe no arquivo de configuração", peerPublicKey);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao adicionar peer ao arquivo de configuração {ConfigPath}", configPath);
+            // Não lança exceção - o peer já foi adicionado via wg set
+        }
+    }
+
+    /// <summary>
+    /// Recarrega a interface WireGuard para aplicar mudanças
+    /// </summary>
+    private async Task ReloadInterfaceAsync(string interfaceName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Usar wg syncconf para sincronizar arquivo com interface (sem interrupção)
+            var syncProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = $"syncconf {interfaceName} /etc/wireguard/{interfaceName}.conf",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            syncProcess.Start();
+            var output = await syncProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await syncProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await syncProcess.WaitForExitAsync(cancellationToken);
+
+            if (syncProcess.ExitCode == 0)
+            {
+                _logger?.LogDebug("Interface {InterfaceName} recarregada com sucesso", interfaceName);
+            }
+            else
+            {
+                _logger?.LogWarning("Erro ao recarregar interface {InterfaceName}: {Error}. Tentando wg-quick up...", interfaceName, error);
+                
+                // Fallback: fazer down e up
+                await DownInterfaceIfActiveAsync(interfaceName, cancellationToken);
+                await UpInterfaceAsync(interfaceName, cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Erro ao recarregar interface {InterfaceName}. Interface pode não estar ativa.", interfaceName);
+            // Não lança exceção - continua operação
+        }
+    }
+
+    /// <summary>
+    /// Faz DOWN da interface se estiver ativa
+    /// </summary>
+    private async Task DownInterfaceIfActiveAsync(string interfaceName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var checkProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = $"show {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+
+            if (checkProcess.ExitCode == 0)
+            {
+                var downProcess = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "/usr/bin/wg-quick",
+                        Arguments = $"down {interfaceName}",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+                downProcess.Start();
+                await downProcess.WaitForExitAsync(cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Erro ao verificar/desativar interface {InterfaceName}", interfaceName);
+        }
+    }
+
+    /// <summary>
+    /// Faz UP da interface
+    /// </summary>
+    private async Task UpInterfaceAsync(string interfaceName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var upProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg-quick",
+                    Arguments = $"up {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            upProcess.Start();
+            var error = await upProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await upProcess.WaitForExitAsync(cancellationToken);
+
+            if (upProcess.ExitCode != 0)
+            {
+                _logger?.LogWarning("Erro ao ativar interface {InterfaceName}: {Error}", interfaceName, error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Erro ao ativar interface {InterfaceName}", interfaceName);
         }
     }
 

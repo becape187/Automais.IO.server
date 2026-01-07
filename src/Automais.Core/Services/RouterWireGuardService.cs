@@ -2,6 +2,7 @@ using Automais.Core.Configuration;
 using Automais.Core.DTOs;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using System.Text;
@@ -18,19 +19,22 @@ public class RouterWireGuardService : IRouterWireGuardService
     private readonly IVpnNetworkRepository _vpnNetworkRepository;
     private readonly IWireGuardServerService? _wireGuardServerService;
     private readonly WireGuardSettings _wireGuardSettings;
+    private readonly ILogger<RouterWireGuardService>? _logger;
 
     public RouterWireGuardService(
         IRouterWireGuardPeerRepository peerRepository,
         IRouterRepository routerRepository,
         IVpnNetworkRepository vpnNetworkRepository,
         IOptions<WireGuardSettings> wireGuardSettings,
-        IWireGuardServerService? wireGuardServerService = null)
+        IWireGuardServerService? wireGuardServerService = null,
+        ILogger<RouterWireGuardService>? logger = null)
     {
         _peerRepository = peerRepository;
         _routerRepository = routerRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
         _wireGuardSettings = wireGuardSettings.Value;
         _wireGuardServerService = wireGuardServerService;
+        _logger = logger;
     }
 
     public async Task<IEnumerable<RouterWireGuardPeerDto>> GetByRouterIdAsync(Guid routerId, CancellationToken cancellationToken = default)
@@ -95,7 +99,40 @@ public class RouterWireGuardService : IRouterWireGuardService
             }
         }
 
-        // Gerar par de chaves WireGuard
+        // Se temos acesso ao WireGuardServerService, usar ProvisionRouterAsync que gera chaves corretas
+        // e adiciona o peer ao servidor WireGuard
+        if (_wireGuardServerService != null)
+        {
+            // Construir allowedNetworks a partir do AllowedIps (se fornecido)
+            var allowedNetworks = new List<string>();
+            if (!string.IsNullOrWhiteSpace(dto.AllowedIps))
+            {
+                // Se AllowedIps foi fornecido, pode conter múltiplas redes separadas por vírgula
+                // Mas o IP do router já está em routerIp, então adicionar apenas se houver outras redes
+                // Por enquanto, apenas usar o IP do router
+            }
+            
+            // Usar ProvisionRouterAsync que gera chaves válidas e adiciona ao servidor
+            return await _wireGuardServerService.ProvisionRouterAsync(
+                routerId,
+                dto.VpnNetworkId,
+                allowedNetworks,
+                routerIp, // IP manual
+                cancellationToken);
+        }
+
+        // Fallback: Se não temos WireGuardServerService, gerar chaves mockadas (NÃO RECOMENDADO)
+        // ⚠️ ATENÇÃO: Chaves geradas assim NÃO SÃO VÁLIDAS para WireGuard!
+        // Isso só deve acontecer em ambientes de desenvolvimento/teste
+        _logger?.LogWarning("⚠️ Gerando chaves WireGuard mockadas - NÃO VÁLIDAS para produção! " +
+                           "Configure IWireGuardServerService para gerar chaves válidas.");
+        
+        // Lançar exceção em vez de gerar chaves inválidas
+        throw new InvalidOperationException(
+            "Não é possível criar peer WireGuard sem IWireGuardServerService configurado. " +
+            "As chaves precisam ser geradas usando 'wg genkey' do sistema Linux. " +
+            "Configure o IWireGuardServerService no Program.cs.");
+        
         var (publicKey, privateKey) = GenerateWireGuardKeys();
 
         // Criar peer no banco
@@ -185,13 +222,12 @@ public class RouterWireGuardService : IRouterWireGuardService
             throw new KeyNotFoundException($"Peer WireGuard com ID {id} não encontrado.");
         }
 
-        var (publicKey, privateKey) = GenerateWireGuardKeys();
-        peer.PublicKey = publicKey;
-        peer.PrivateKey = privateKey; // TODO: Criptografar
-        peer.UpdatedAt = DateTime.UtcNow;
-
-        var updated = await _peerRepository.UpdateAsync(peer, cancellationToken);
-        return MapToDto(updated);
+        // ⚠️ ATENÇÃO: Regenerar chaves requer remover o peer antigo do servidor e adicionar o novo
+        // Por enquanto, lançar exceção informando que precisa deletar e recriar
+        throw new NotImplementedException(
+            "Regeneração de chaves ainda não está implementada. " +
+            "Para regenerar chaves, delete o peer e crie novamente via ProvisionRouterAsync. " +
+            "Isso garantirá que as chaves sejam geradas corretamente usando 'wg genkey' do sistema Linux.");
     }
 
     private static (string publicKey, string privateKey) GenerateWireGuardKeys()

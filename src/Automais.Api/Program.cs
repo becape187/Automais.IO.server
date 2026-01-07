@@ -274,7 +274,8 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
     var vpnNetworkRepo = sp.GetRequiredService<IVpnNetworkRepository>();
     var wireGuardServerService = sp.GetRequiredService<IWireGuardServerService>();
     var wireGuardSettings = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<WireGuardSettings>>();
-    return new RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, wireGuardServerService);
+    var logger = sp.GetService<Microsoft.Extensions.Logging.ILogger<Automais.Core.Services.RouterWireGuardService>>();
+    return new Automais.Core.Services.RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, wireGuardServerService, logger);
 });
 
 // Serviço de sincronização do WireGuard (executa na inicialização)

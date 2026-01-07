@@ -17,6 +17,16 @@ public class VpnNetworkRepository : IVpnNetworkRepository
         _context = context;
     }
 
+    /// <summary>
+    /// Obtém todas as VpnNetworks do sistema (para sincronização WireGuard)
+    /// </summary>
+    public async Task<IEnumerable<VpnNetwork>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        return await _context.VpnNetworks
+            .OrderBy(n => n.Name)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<VpnNetwork?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         return await _context.VpnNetworks

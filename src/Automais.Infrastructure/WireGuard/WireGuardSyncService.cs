@@ -75,37 +75,34 @@ public class WireGuardSyncService : IHostedService
     }
 
     /// <summary>
-    /// Sincroniza todas as configurações do WireGuard do banco de dados para os arquivos
+    /// Sincroniza todas as configurações do WireGuard do banco de dados para os arquivos.
+    /// IMPORTANTE: Sincroniza TODAS as VpnNetworks, não apenas as que têm peers.
+    /// Isso garante que em caso de desastre, todas as interfaces sejam reconstruídas.
     /// </summary>
     private async Task SyncWireGuardConfigurationsAsync(CancellationToken cancellationToken)
     {
-        // Buscar todas as VpnNetworks através dos peers (peers só existem se houver VpnNetwork)
-        var allPeers = await _peerRepository.GetAllAsync(cancellationToken);
-        
-        // Obter VpnNetworkIds únicos
-        var vpnNetworkIds = allPeers
-            .Select(p => p.VpnNetworkId)
-            .Distinct()
-            .ToList();
+        // Buscar TODAS as VpnNetworks do banco (fonte de verdade)
+        var allVpnNetworks = await _vpnNetworkRepository.GetAllAsync(cancellationToken);
 
-        if (!vpnNetworkIds.Any())
+        if (!allVpnNetworks.Any())
         {
-            _logger.LogInformation("Nenhuma VpnNetwork com peers encontrada. Nada para sincronizar.");
+            _logger.LogInformation("Nenhuma VpnNetwork encontrada no banco. Nada para sincronizar.");
             return;
         }
 
-        _logger.LogInformation("Encontradas {Count} VpnNetworks para sincronizar", vpnNetworkIds.Count);
+        _logger.LogInformation("Encontradas {Count} VpnNetworks para sincronizar", allVpnNetworks.Count());
 
-        foreach (var vpnNetworkId in vpnNetworkIds)
+        foreach (var vpnNetwork in allVpnNetworks)
         {
             try
             {
-                await SyncVpnNetworkAsync(vpnNetworkId, cancellationToken);
+                await SyncVpnNetworkAsync(vpnNetwork.Id, cancellationToken);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao sincronizar VpnNetwork {VpnNetworkId}", vpnNetworkId);
-                // Continua com as próximas redes
+                _logger.LogError(ex, "Erro ao sincronizar VpnNetwork {VpnNetworkId} ({VpnNetworkName})", 
+                    vpnNetwork.Id, vpnNetwork.Name);
+                // Continua com as próximas redes - NÃO para em caso de erro
             }
         }
     }

@@ -13,7 +13,20 @@ public class VpnNetwork
     public string? Description { get; set; }
     public bool IsDefault { get; set; }
     public string? DnsServers { get; set; }
+    
+    /// <summary>
+    /// Chave PRIVADA do servidor WireGuard para esta VPN.
+    /// FONTE DE VERDADE: Salva no banco para recuperação de desastres.
+    /// Nunca deve ser exposta na API.
+    /// </summary>
+    public string? ServerPrivateKey { get; set; }
+    
+    /// <summary>
+    /// Chave PÚBLICA do servidor WireGuard para esta VPN.
+    /// Derivada da ServerPrivateKey. Usada nos arquivos .conf dos clientes.
+    /// </summary>
     public string? ServerPublicKey { get; set; }
+    
     /// <summary>
     /// Endpoint do servidor VPN (ex: "automais.io"). Se não especificado, usa "automais.io" como padrão.
     /// </summary>

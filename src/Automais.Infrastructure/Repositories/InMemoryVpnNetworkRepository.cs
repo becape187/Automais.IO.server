@@ -9,6 +9,14 @@ public class InMemoryVpnNetworkRepository : IVpnNetworkRepository
     private readonly List<VpnNetworkMembership> _memberships = new();
     private readonly object _lock = new();
 
+    public Task<IEnumerable<VpnNetwork>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        lock (_lock)
+        {
+            return Task.FromResult<IEnumerable<VpnNetwork>>(_networks.OrderBy(n => n.Name).ToList());
+        }
+    }
+
     public Task<VpnNetwork?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         lock (_lock)

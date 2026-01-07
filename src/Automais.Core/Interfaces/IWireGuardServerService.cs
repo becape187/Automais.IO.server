@@ -74,5 +74,13 @@ public interface IWireGuardServerService
     Task EnsureInterfaceForVpnNetworkAsync(
         Guid vpnNetworkId,
         CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Remove a interface WireGuard de uma VpnNetwork
+    /// Faz wg-quick down e remove o arquivo de configuração
+    /// </summary>
+    Task RemoveInterfaceForVpnNetworkAsync(
+        Guid vpnNetworkId,
+        CancellationToken cancellationToken = default);
 }
 

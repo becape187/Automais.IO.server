@@ -251,6 +251,9 @@ public class ApplicationDbContext : DbContext
                 .IsRequired()
                 .HasMaxLength(50);
 
+            entity.Property(e => e.ServerPrivateKey)
+                .HasMaxLength(200);
+
             entity.Property(e => e.ServerPublicKey)
                 .HasMaxLength(200);
 

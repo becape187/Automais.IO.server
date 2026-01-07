@@ -4,6 +4,10 @@ namespace Automais.Core.Interfaces;
 
 public interface IVpnNetworkRepository
 {
+    /// <summary>
+    /// Obtém todas as VpnNetworks do sistema (para sincronização WireGuard)
+    /// </summary>
+    Task<IEnumerable<VpnNetwork>> GetAllAsync(CancellationToken cancellationToken = default);
     Task<VpnNetwork?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
     Task<IEnumerable<VpnNetwork>> GetByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default);
     Task<IEnumerable<VpnNetwork>> GetByIdsAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default);

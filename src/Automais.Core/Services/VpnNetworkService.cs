@@ -13,19 +13,22 @@ public class VpnNetworkService : IVpnNetworkService
     private readonly IDeviceRepository _deviceRepository;
     private readonly ITenantUserService _tenantUserService;
     private readonly WireGuardSettings _wireGuardSettings;
+    private readonly IWireGuardServerService? _wireGuardServerService;
 
     public VpnNetworkService(
         ITenantRepository tenantRepository,
         IVpnNetworkRepository vpnNetworkRepository,
         IDeviceRepository deviceRepository,
         ITenantUserService tenantUserService,
-        IOptions<WireGuardSettings> wireGuardSettings)
+        IOptions<WireGuardSettings> wireGuardSettings,
+        IWireGuardServerService? wireGuardServerService = null)
     {
         _tenantRepository = tenantRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
         _deviceRepository = deviceRepository;
         _tenantUserService = tenantUserService;
         _wireGuardSettings = wireGuardSettings.Value;
+        _wireGuardServerService = wireGuardServerService;
     }
 
     public async Task<IEnumerable<VpnNetworkDto>> GetByTenantAsync(Guid tenantId, CancellationToken cancellationToken = default)
@@ -81,6 +84,22 @@ public class VpnNetworkService : IVpnNetworkService
         };
 
         var created = await _vpnNetworkRepository.CreateAsync(network, cancellationToken);
+        
+        // Garantir que a interface WireGuard seja criada e iniciada
+        if (_wireGuardServerService != null)
+        {
+            try
+            {
+                await _wireGuardServerService.EnsureInterfaceForVpnNetworkAsync(created.Id, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Logar erro mas não falhar criação da VPN
+                // A interface pode ser criada depois manualmente ou na sincronização
+                // TODO: Adicionar ILogger para logar este erro
+            }
+        }
+        
         return await MapToDtoAsync(created, cancellationToken);
     }
 
@@ -129,6 +148,22 @@ public class VpnNetworkService : IVpnNetworkService
         if (network == null)
         {
             return;
+        }
+
+        // Remover interface WireGuard antes de deletar do banco
+        // Isso faz wg-quick down e remove o arquivo de configuração
+        if (_wireGuardServerService != null)
+        {
+            try
+            {
+                await _wireGuardServerService.RemoveInterfaceForVpnNetworkAsync(id, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Logar erro mas continuar com a deleção do banco
+                // TODO: Adicionar ILogger para logar este erro
+                // A interface pode não existir ou já ter sido removida
+            }
         }
 
         await _vpnNetworkRepository.DeleteAsync(id, cancellationToken);

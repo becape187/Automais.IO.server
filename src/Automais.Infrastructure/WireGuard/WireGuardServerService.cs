@@ -520,6 +520,78 @@ public class WireGuardServerService : IWireGuardServerService
     }
 
     /// <summary>
+    /// Remove a interface WireGuard de uma VpnNetwork
+    /// Faz wg-quick down e remove o arquivo de configuração
+    /// </summary>
+    public async Task RemoveInterfaceForVpnNetworkAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default)
+    {
+        var interfaceName = GetInterfaceName(vpnNetworkId);
+        var configPath = $"/etc/wireguard/{interfaceName}.conf";
+        
+        _logger?.LogInformation("Removendo interface WireGuard {InterfaceName} para VpnNetwork {VpnNetworkId}", 
+            interfaceName, vpnNetworkId);
+
+        // 1. Fazer wg-quick down (desativar interface)
+        try
+        {
+            var downProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg-quick",
+                    Arguments = $"down {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            
+            downProcess.Start();
+            var output = await downProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await downProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await downProcess.WaitForExitAsync(cancellationToken);
+
+            if (downProcess.ExitCode == 0)
+            {
+                _logger?.LogInformation("Interface WireGuard {InterfaceName} desativada com sucesso", interfaceName);
+            }
+            else
+            {
+                // Interface pode não estar ativa, não é erro crítico
+                _logger?.LogDebug("Interface WireGuard {InterfaceName} não estava ativa ou já foi desativada: {Error}", 
+                    interfaceName, error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Erro ao desativar interface WireGuard {InterfaceName} (pode não estar ativa)", interfaceName);
+            // Não lança exceção - continua para remover o arquivo
+        }
+
+        // 2. Remover arquivo de configuração
+        try
+        {
+            if (File.Exists(configPath))
+            {
+                File.Delete(configPath);
+                _logger?.LogInformation("Arquivo de configuração WireGuard removido: {ConfigPath}", configPath);
+            }
+            else
+            {
+                _logger?.LogDebug("Arquivo de configuração WireGuard não existe: {ConfigPath}", configPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao remover arquivo de configuração WireGuard: {ConfigPath}", configPath);
+            throw; // Lança exceção aqui pois é importante remover o arquivo
+        }
+
+        _logger?.LogInformation("Interface WireGuard {InterfaceName} removida com sucesso", interfaceName);
+    }
+
+    /// <summary>
     /// Garante que a interface WireGuard existe, criando o arquivo de configuração inicial se necessário
     /// </summary>
     private async Task EnsureInterfaceExistsAsync(
@@ -529,53 +601,119 @@ public class WireGuardServerService : IWireGuardServerService
     {
         var configPath = $"/etc/wireguard/{interfaceName}.conf";
         
-        // Se o arquivo já existe, verificar se a chave pública está salva
-        if (File.Exists(configPath))
+        // FLUXO CRÍTICO PARA RECUPERAÇÃO DE DESASTRES:
+        // 1. Se o banco tem chaves salvas, SEMPRE usar essas chaves (fonte de verdade)
+        // 2. Se o banco não tem chaves, gerar novas e salvar no banco
+        // 3. O arquivo .conf é reconstruído a partir do banco
+        
+        string serverPrivateKey;
+        string serverPublicKey;
+        bool needsUpdate = false;
+        
+        // Verificar se já temos chaves no banco (fonte de verdade)
+        if (!string.IsNullOrEmpty(vpnNetwork.ServerPrivateKey) && !string.IsNullOrEmpty(vpnNetwork.ServerPublicKey))
         {
-            _logger?.LogDebug("Interface WireGuard {InterfaceName} já existe", interfaceName);
+            _logger?.LogDebug("Usando chaves do banco para VpnNetwork {VpnNetworkId} (recuperação de desastre)", vpnNetwork.Id);
+            serverPrivateKey = vpnNetwork.ServerPrivateKey;
+            serverPublicKey = vpnNetwork.ServerPublicKey;
+        }
+        else if (File.Exists(configPath))
+        {
+            // Arquivo existe mas banco não tem chaves - recuperar do arquivo e salvar no banco
+            _logger?.LogInformation("Recuperando chaves do arquivo existente para VpnNetwork {VpnNetworkId}", vpnNetwork.Id);
             
-            // Se a chave pública não está salva, tentar ler do arquivo e salvar
-            if (string.IsNullOrEmpty(vpnNetwork.ServerPublicKey))
+            try
             {
-                try
+                var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
+                serverPrivateKey = "";
+                foreach (var line in configLines)
                 {
-                    var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
-                    foreach (var line in configLines)
+                    if (line.TrimStart().StartsWith("PrivateKey", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (line.TrimStart().StartsWith("PrivateKey", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var privateKey = line.Split('=')[1].Trim();
-                            var recoveredPublicKey = await GetPublicKeyFromPrivateKeyAsync(privateKey);
-                            if (recoveredPublicKey != "SERVER_PUBLIC_KEY_PLACEHOLDER")
-                            {
-                                vpnNetwork.ServerPublicKey = recoveredPublicKey;
-                                vpnNetwork.UpdatedAt = DateTime.UtcNow;
-                                await _vpnNetworkRepository.UpdateAsync(vpnNetwork, cancellationToken);
-                                _logger?.LogInformation("Chave pública do servidor recuperada e salva na VpnNetwork {VpnNetworkId}", vpnNetwork.Id);
-                            }
-                            break;
-                        }
+                        serverPrivateKey = line.Split('=')[1].Trim();
+                        break;
                     }
                 }
-                catch (Exception ex)
+                
+                if (!string.IsNullOrEmpty(serverPrivateKey))
                 {
-                    _logger?.LogWarning(ex, "Erro ao tentar recuperar chave pública do arquivo de configuração existente");
+                    serverPublicKey = await GetPublicKeyFromPrivateKeyAsync(serverPrivateKey);
+                    if (serverPublicKey != "SERVER_PUBLIC_KEY_PLACEHOLDER")
+                    {
+                        // Salvar no banco para recuperação futura
+                        vpnNetwork.ServerPrivateKey = serverPrivateKey;
+                        vpnNetwork.ServerPublicKey = serverPublicKey;
+                        needsUpdate = true;
+                        _logger?.LogInformation("Chaves recuperadas do arquivo e salvas no banco para VpnNetwork {VpnNetworkId}", vpnNetwork.Id);
+                    }
+                    else
+                    {
+                        // Não conseguiu derivar a pública - gerar novas
+                        (serverPublicKey, serverPrivateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
+                        vpnNetwork.ServerPrivateKey = serverPrivateKey;
+                        vpnNetwork.ServerPublicKey = serverPublicKey;
+                        needsUpdate = true;
+                    }
+                }
+                else
+                {
+                    // Arquivo corrupto - gerar novas chaves
+                    (serverPublicKey, serverPrivateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
+                    vpnNetwork.ServerPrivateKey = serverPrivateKey;
+                    vpnNetwork.ServerPublicKey = serverPublicKey;
+                    needsUpdate = true;
                 }
             }
-            
-            return;
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Erro ao recuperar chaves do arquivo. Gerando novas chaves.");
+                (serverPublicKey, serverPrivateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
+                vpnNetwork.ServerPrivateKey = serverPrivateKey;
+                vpnNetwork.ServerPublicKey = serverPublicKey;
+                needsUpdate = true;
+            }
         }
-
-        // Gerar chaves do servidor para esta interface
-        var (serverPublicKey, serverPrivateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
-        
-        // Salvar a chave pública na VpnNetwork se ainda não estiver salva
-        if (string.IsNullOrEmpty(vpnNetwork.ServerPublicKey))
+        else
         {
+            // Nem banco nem arquivo tem chaves - gerar novas
+            _logger?.LogInformation("Gerando novas chaves para VpnNetwork {VpnNetworkId}", vpnNetwork.Id);
+            (serverPublicKey, serverPrivateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
+            vpnNetwork.ServerPrivateKey = serverPrivateKey;
             vpnNetwork.ServerPublicKey = serverPublicKey;
+            needsUpdate = true;
+        }
+        
+        // Atualizar banco se necessário
+        if (needsUpdate)
+        {
             vpnNetwork.UpdatedAt = DateTime.UtcNow;
             await _vpnNetworkRepository.UpdateAsync(vpnNetwork, cancellationToken);
-            _logger?.LogInformation("Chave pública do servidor salva na VpnNetwork {VpnNetworkId}", vpnNetwork.Id);
+            _logger?.LogInformation("Chaves do servidor salvas no banco para VpnNetwork {VpnNetworkId}", vpnNetwork.Id);
+        }
+        
+        // Se o arquivo já existe e temos as chaves corretas, verificar se precisa atualizar
+        if (File.Exists(configPath))
+        {
+            // Verificar se a chave no arquivo é a mesma do banco
+            var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
+            foreach (var line in configLines)
+            {
+                if (line.TrimStart().StartsWith("PrivateKey", StringComparison.OrdinalIgnoreCase))
+                {
+                    var filePrivateKey = line.Split('=')[1].Trim();
+                    if (filePrivateKey == serverPrivateKey)
+                    {
+                        _logger?.LogDebug("Interface WireGuard {InterfaceName} já existe com chave correta", interfaceName);
+                        return; // Arquivo já está correto
+                    }
+                    else
+                    {
+                        _logger?.LogWarning("Chave no arquivo difere do banco. Recriando arquivo com chave do banco.");
+                        // Continuar para recriar o arquivo
+                        break;
+                    }
+                }
+            }
         }
         
         // Parse do CIDR para obter o IP da interface do servidor
@@ -1124,27 +1262,16 @@ public class WireGuardServerService : IWireGuardServerService
         
         // Seção [Peer] - Configuração do servidor
         sb.AppendLine("[Peer]");
+        // Sempre buscar chave pública do servidor Linux (fonte de verdade)
         var serverPublicKey = await GetServerPublicKeyAsync(peer.VpnNetworkId, cancellationToken);
         
         if (serverPublicKey == "SERVER_PUBLIC_KEY_PLACEHOLDER")
         {
-            _logger?.LogWarning("Chave pública do servidor não encontrada para VpnNetwork {VpnNetworkId}. Usando placeholder.", peer.VpnNetworkId);
-            // Tentar buscar do arquivo de configuração do servidor
-            var interfaceName = GetInterfaceName(peer.VpnNetworkId);
-            var configPath = $"/etc/wireguard/{interfaceName}.conf";
-            if (File.Exists(configPath))
-            {
-                var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
-                foreach (var line in configLines)
-                {
-                    if (line.TrimStart().StartsWith("PrivateKey", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var privateKey = line.Split('=')[1].Trim();
-                        serverPublicKey = await GetPublicKeyFromPrivateKeyAsync(privateKey);
-                        break;
-                    }
-                }
-            }
+            _logger?.LogError("Chave pública do servidor não encontrada para VpnNetwork {VpnNetworkId}. " +
+                            "A interface WireGuard pode não estar configurada corretamente.", peer.VpnNetworkId);
+            throw new InvalidOperationException(
+                $"Chave pública do servidor não encontrada para a rede VPN. " +
+                $"Certifique-se de que a interface WireGuard está configurada corretamente.");
         }
         
         sb.AppendLine($"PublicKey = {serverPublicKey}");
@@ -1170,22 +1297,67 @@ public class WireGuardServerService : IWireGuardServerService
 
     private async Task<string> GetServerPublicKeyAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default)
     {
-        // Buscar chave pública do servidor da VpnNetwork
-        var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
-        if (vpnNetwork == null)
-            throw new KeyNotFoundException("Rede VPN não encontrada.");
-
-        // Primeiro, tentar usar a chave salva na VpnNetwork
-        if (!string.IsNullOrEmpty(vpnNetwork.ServerPublicKey))
+        var interfaceName = GetInterfaceName(vpnNetworkId);
+        
+        // SEMPRE buscar a chave pública do servidor Linux (fonte de verdade)
+        // Primeiro tentar via wg show (mais confiável)
+        try
         {
-            _logger?.LogDebug("Chave pública do servidor encontrada na VpnNetwork {VpnNetworkId}", vpnNetworkId);
-            return vpnNetwork.ServerPublicKey;
+            // wg show retorna a chave pública na linha "public key: ..."
+            var wgShowProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = $"show {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            
+            wgShowProcess.Start();
+            var output = await wgShowProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = await wgShowProcess.StandardError.ReadToEndAsync(cancellationToken);
+            await wgShowProcess.WaitForExitAsync(cancellationToken);
+
+            // Extrair chave pública da saída (formato: "public key: ...")
+            if (wgShowProcess.ExitCode == 0 && !string.IsNullOrEmpty(output))
+            {
+                var lines = output.Split('\n');
+                foreach (var line in lines)
+                {
+                    if (line.TrimStart().StartsWith("public key:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var publicKey = line.Split(':')[1].Trim();
+                        if (!string.IsNullOrEmpty(publicKey))
+                        {
+                            _logger?.LogDebug("Chave pública do servidor obtida via wg show para interface {InterfaceName}", interfaceName);
+                            
+                            // Atualizar no banco para cache
+                            var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
+                            if (vpnNetwork != null && vpnNetwork.ServerPublicKey != publicKey)
+                            {
+                                vpnNetwork.ServerPublicKey = publicKey;
+                                vpnNetwork.UpdatedAt = DateTime.UtcNow;
+                                await _vpnNetworkRepository.UpdateAsync(vpnNetwork, cancellationToken);
+                                _logger?.LogInformation("Chave pública do servidor atualizada no banco para VpnNetwork {VpnNetworkId}", vpnNetworkId);
+                            }
+                            
+                            return publicKey;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Erro ao obter chave pública via wg show para interface {InterfaceName}", interfaceName);
         }
 
-        // Se não estiver salva, tentar buscar do arquivo de configuração da interface
-        var interfaceName = GetInterfaceName(vpnNetworkId);
+        // Fallback: tentar buscar do arquivo de configuração
         var configPath = $"/etc/wireguard/{interfaceName}.conf";
-        
         if (File.Exists(configPath))
         {
             var configLines = await File.ReadAllLinesAsync(configPath, cancellationToken);
@@ -1198,18 +1370,30 @@ public class WireGuardServerService : IWireGuardServerService
                     var publicKey = await GetPublicKeyFromPrivateKeyAsync(privateKey);
                     if (publicKey != "SERVER_PUBLIC_KEY_PLACEHOLDER")
                     {
-                        // Salvar a chave na VpnNetwork para uso futuro
-                        vpnNetwork.ServerPublicKey = publicKey;
-                        vpnNetwork.UpdatedAt = DateTime.UtcNow;
-                        await _vpnNetworkRepository.UpdateAsync(vpnNetwork, cancellationToken);
-                        _logger?.LogInformation("Chave pública do servidor recuperada do arquivo e salva na VpnNetwork {VpnNetworkId}", vpnNetworkId);
+                        // Atualizar no banco
+                        var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
+                        if (vpnNetwork != null)
+                        {
+                            vpnNetwork.ServerPublicKey = publicKey;
+                            vpnNetwork.UpdatedAt = DateTime.UtcNow;
+                            await _vpnNetworkRepository.UpdateAsync(vpnNetwork, cancellationToken);
+                            _logger?.LogInformation("Chave pública do servidor recuperada do arquivo e salva na VpnNetwork {VpnNetworkId}", vpnNetworkId);
+                        }
                         return publicKey;
                     }
                 }
             }
         }
 
-        // Se não encontrou, retornar placeholder (será gerado quando criar interface)
+        // Último fallback: usar chave do banco (pode estar desatualizada)
+        var vpnNetworkFallback = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
+        if (vpnNetworkFallback != null && !string.IsNullOrEmpty(vpnNetworkFallback.ServerPublicKey))
+        {
+            _logger?.LogWarning("Usando chave pública do banco (pode estar desatualizada) para VpnNetwork {VpnNetworkId}", vpnNetworkId);
+            return vpnNetworkFallback.ServerPublicKey;
+        }
+
+        // Se não encontrou, retornar placeholder
         _logger?.LogWarning("Chave pública do servidor não encontrada para interface {InterfaceName}", interfaceName);
         return "SERVER_PUBLIC_KEY_PLACEHOLDER";
     }

@@ -720,6 +720,35 @@ public class WireGuardServerService : IWireGuardServerService
     }
 
     /// <summary>
+    /// Verifica se a interface WireGuard está ativa
+    /// </summary>
+    private async Task<bool> IsInterfaceActiveAsync(string interfaceName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var checkProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = $"show {interfaceName}",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            checkProcess.Start();
+            await checkProcess.WaitForExitAsync(cancellationToken);
+            return checkProcess.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Garante que a interface WireGuard existe para uma VpnNetwork
     /// </summary>
     public async Task EnsureInterfaceForVpnNetworkAsync(Guid vpnNetworkId, CancellationToken cancellationToken = default)
@@ -995,7 +1024,18 @@ public class WireGuardServerService : IWireGuardServerService
         // Configurar regras de firewall para esta interface específica
         await ConfigureFirewallRulesAsync(interfaceName, vpnNetwork.Cidr, cancellationToken);
         
-        // Tentar ativar a interface usando wg-quick
+        // Verificar se a interface já está ativa antes de tentar ativar
+        bool interfaceIsActive = await IsInterfaceActiveAsync(interfaceName, cancellationToken);
+        
+        if (interfaceIsActive)
+        {
+            _logger?.LogDebug("Interface WireGuard {InterfaceName} já está ativa. Não será reativada para evitar interrupção.", interfaceName);
+            // Não fazer wg-quick up se já está ativa - isso causaria interrupção
+            // O sync na inicialização cuidará de sincronizar o arquivo com a interface
+            return;
+        }
+        
+        // Tentar ativar a interface usando wg-quick (apenas se não estiver ativa)
         try
         {
             var upProcess = new Process
@@ -1021,12 +1061,20 @@ public class WireGuardServerService : IWireGuardServerService
             }
             else
             {
-                _logger?.LogWarning("Erro ao ativar interface WireGuard {InterfaceName}: {Error}", interfaceName, error);
+                // Se o erro é "already exists", a interface já está ativa (verificação pode ter falhado)
+                if (error.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger?.LogDebug("Interface WireGuard {InterfaceName} já existe e está ativa", interfaceName);
+                }
+                else
+                {
+                    _logger?.LogWarning("Erro ao ativar interface WireGuard {InterfaceName}: {Error}", interfaceName, error);
+                }
             }
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Exceção ao ativar interface WireGuard {InterfaceName}", interfaceName);
+            _logger?.LogWarning(ex, "Erro ao ativar interface WireGuard {InterfaceName}", interfaceName);
             // Não lança exceção - a interface pode ser ativada manualmente depois
         }
     }

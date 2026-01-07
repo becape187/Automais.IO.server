@@ -552,10 +552,12 @@ public class WireGuardSyncService : IHostedService
                 }
                 else
                 {
-                    _logger.LogWarning("Erro ao sincronizar interface {InterfaceName}: {Error}. Tentando down/up...", interfaceName, syncError);
-                    // Fallback: fazer down e up
-                    await DownInterfaceIfActiveAsync(interfaceName, cancellationToken);
-                    await UpInterfaceAsync(interfaceName, cancellationToken);
+                    // Se o erro não for crítico, apenas logar e não fazer down/up (evita derrubar conexões)
+                    // wg syncconf pode falhar se o arquivo tiver algum problema, mas a interface continua funcionando
+                    _logger.LogWarning("Erro ao sincronizar interface {InterfaceName} via syncconf: {Error}. Interface continua ativa.", interfaceName, syncError);
+                    _logger.LogWarning("Se houver problemas de conectividade, reinicie a API para forçar reload completo.");
+                    // NÃO fazer down/up automaticamente - isso derruba todas as conexões ativas!
+                    // O sync completo só deve acontecer na inicialização da API
                 }
             }
             else

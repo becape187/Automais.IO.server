@@ -78,15 +78,24 @@ public class WireGuardSyncService : IHostedService
     /// Sincroniza todas as configurações do WireGuard do banco de dados para os arquivos.
     /// IMPORTANTE: Sincroniza TODAS as VpnNetworks, não apenas as que têm peers.
     /// Isso garante que em caso de desastre, todas as interfaces sejam reconstruídas.
+    /// Também remove interfaces órfãs (existem no sistema mas não no banco).
     /// </summary>
     private async Task SyncWireGuardConfigurationsAsync(CancellationToken cancellationToken)
     {
-        // Buscar TODAS as VpnNetworks do banco (fonte de verdade)
+        // 1. Buscar TODAS as VpnNetworks do banco (fonte de verdade)
         var allVpnNetworks = await _vpnNetworkRepository.GetAllAsync(cancellationToken);
+        var vpnNetworkIds = allVpnNetworks.Select(v => v.Id).ToHashSet();
 
+        // 2. Listar todas as interfaces WireGuard no sistema
+        var systemInterfaces = await ListSystemWireGuardInterfacesAsync(cancellationToken);
+        
+        // 3. Remover interfaces órfãs (existem no sistema mas não no banco)
+        await RemoveOrphanInterfacesAsync(systemInterfaces, vpnNetworkIds, cancellationToken);
+
+        // 4. Sincronizar interfaces do banco
         if (!allVpnNetworks.Any())
         {
-            _logger.LogInformation("Nenhuma VpnNetwork encontrada no banco. Nada para sincronizar.");
+            _logger.LogInformation("Nenhuma VpnNetwork encontrada no banco. Interfaces órfãs removidas.");
             return;
         }
 
@@ -103,6 +112,129 @@ public class WireGuardSyncService : IHostedService
                 _logger.LogError(ex, "Erro ao sincronizar VpnNetwork {VpnNetworkId} ({VpnNetworkName})", 
                     vpnNetwork.Id, vpnNetwork.Name);
                 // Continua com as próximas redes - NÃO para em caso de erro
+            }
+        }
+    }
+
+    /// <summary>
+    /// Lista todas as interfaces WireGuard ativas no sistema
+    /// </summary>
+    private async Task<List<string>> ListSystemWireGuardInterfacesAsync(CancellationToken cancellationToken)
+    {
+        var interfaces = new List<string>();
+        
+        try
+        {
+            // Listar interfaces via wg show (mostra apenas interfaces ativas)
+            var wgShowProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = "show",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            
+            wgShowProcess.Start();
+            var output = await wgShowProcess.StandardOutput.ReadToEndAsync(cancellationToken);
+            await wgShowProcess.WaitForExitAsync(cancellationToken);
+
+            if (wgShowProcess.ExitCode == 0 && !string.IsNullOrEmpty(output))
+            {
+                // Extrair nomes de interfaces (formato: "interface: wg-xxxx")
+                var lines = output.Split('\n');
+                foreach (var line in lines)
+                {
+                    if (line.TrimStart().StartsWith("interface:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var interfaceName = line.Split(':')[1].Trim();
+                        if (!string.IsNullOrEmpty(interfaceName))
+                        {
+                            interfaces.Add(interfaceName);
+                        }
+                    }
+                }
+            }
+
+            // Também listar arquivos .conf em /etc/wireguard (pode haver interfaces não ativas)
+            var wireGuardDir = "/etc/wireguard";
+            if (System.IO.Directory.Exists(wireGuardDir))
+            {
+                var confFiles = System.IO.Directory.GetFiles(wireGuardDir, "*.conf");
+                foreach (var file in confFiles)
+                {
+                    var fileName = System.IO.Path.GetFileNameWithoutExtension(file);
+                    if (!interfaces.Contains(fileName))
+                    {
+                        interfaces.Add(fileName);
+                    }
+                }
+            }
+
+            _logger.LogDebug("Encontradas {Count} interfaces WireGuard no sistema: {Interfaces}", 
+                interfaces.Count, string.Join(", ", interfaces));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Erro ao listar interfaces WireGuard do sistema");
+        }
+
+        return interfaces;
+    }
+
+    /// <summary>
+    /// Remove interfaces órfãs (existem no sistema mas não no banco)
+    /// </summary>
+    private async Task RemoveOrphanInterfacesAsync(
+        List<string> systemInterfaces,
+        HashSet<Guid> vpnNetworkIds,
+        CancellationToken cancellationToken)
+    {
+        foreach (var interfaceName in systemInterfaces)
+        {
+            try
+            {
+                // Extrair VpnNetworkId do nome da interface (formato: wg-{8 primeiros chars do GUID})
+                // Exemplo: wg-c9520d7d -> precisa encontrar qual VpnNetwork tem ID começando com c9520d7d
+                var interfacePrefix = interfaceName.Replace("wg-", "");
+                
+                // Verificar se existe alguma VpnNetwork com esse prefixo
+                bool isOrphan = true;
+                foreach (var vpnNetworkId in vpnNetworkIds)
+                {
+                    var vpnNetworkPrefix = vpnNetworkId.ToString("N")[..8];
+                    if (vpnNetworkPrefix.Equals(interfacePrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        isOrphan = false;
+                        break;
+                    }
+                }
+
+                if (isOrphan)
+                {
+                    _logger.LogWarning("🔍 Interface órfã detectada: {InterfaceName}. Removendo...", interfaceName);
+                    
+                    // Fazer down da interface
+                    await DownInterfaceIfActiveAsync(interfaceName, cancellationToken);
+                    
+                    // Remover arquivo de configuração
+                    var configPath = $"/etc/wireguard/{interfaceName}.conf";
+                    if (System.IO.File.Exists(configPath))
+                    {
+                        System.IO.File.Delete(configPath);
+                        _logger.LogInformation("✅ Arquivo de configuração órfão removido: {ConfigPath}", configPath);
+                    }
+                    
+                    _logger.LogInformation("✅ Interface órfã {InterfaceName} removida com sucesso", interfaceName);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao remover interface órfã {InterfaceName}", interfaceName);
             }
         }
     }

@@ -284,7 +284,16 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
 });
 
 // SignalR para notificações em tempo real
-builder.Services.AddSignalR();
+builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors = true; // Habilitar erros detalhados para debug
+})
+.AddJsonProtocol(jsonOptions =>
+{
+    // Usar camelCase para compatibilidade com JavaScript/TypeScript
+    jsonOptions.PayloadSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+    jsonOptions.PayloadSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+});
 
 // Serviço de sincronização do WireGuard (executa na inicialização)
 builder.Services.AddHostedService<WireGuardSyncService>();
@@ -314,6 +323,8 @@ builder.Services.AddSingleton<IRouterOsClient>(sp =>
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
+        // Usar camelCase para compatibilidade com JavaScript/TypeScript
+        options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
         // Serializar enums como strings ao invés de números
         options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
         // Ignorar propriedades nulas
@@ -532,11 +543,12 @@ app.UseRouting();
 // IMPORTANTE: SignalR precisa de CORS configurado corretamente
 app.UseCors("AllowFrontend");
 
+// Mapear endpoints - SignalR deve vir ANTES de MapControllers e UseAuthorization para evitar conflitos
+// O endpoint de negociação do SignalR precisa ser acessível sem autenticação
+app.MapHub<Automais.Core.Hubs.RouterStatusHub>("/hubs/router-status");
+
 // Authorization (opcional para SignalR, mas necessário para APIs)
 app.UseAuthorization();
-
-// Mapear endpoints - SignalR deve vir ANTES de MapControllers para evitar conflitos
-app.MapHub<Automais.Core.Hubs.RouterStatusHub>("/hubs/router-status");
 
 // Mapear controllers
 app.MapControllers();

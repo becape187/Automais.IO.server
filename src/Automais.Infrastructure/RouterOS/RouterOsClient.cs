@@ -476,6 +476,116 @@ public class RouterOsClient : IRouterOsClient
         }, $"CreateUserAsync({apiUrl}, {newUsername})", DefaultTimeoutSeconds, cancellationToken);
     }
 
+    /// <summary>
+    /// Faz o parsing de um comando RouterOS e separa o caminho do comando dos parâmetros
+    /// Exemplo: "/ip/firewall/filter/print chain=output where action=drop"
+    /// Retorna: (commandPath: "/ip/firewall/filter/print", parameters: ["chain=output", "where", "action=drop"])
+    /// </summary>
+    private (string commandPath, List<string> parameters) ParseRouterOsCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+            throw new ArgumentException("Comando não pode ser vazio", nameof(command));
+
+        var trimmed = command.Trim();
+        var parts = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        
+        if (parts.Length == 0)
+            throw new ArgumentException("Comando inválido", nameof(command));
+
+        var commandPath = parts[0];
+        var parameters = new List<string>();
+
+        for (int i = 1; i < parts.Length; i++)
+        {
+            parameters.Add(parts[i]);
+        }
+
+        return (commandPath, parameters);
+    }
+
+    /// <summary>
+    /// Adiciona parâmetros ao comando RouterOS usando a sintaxe correta da API
+    /// Suporta formatos como:
+    /// - chain=output (parâmetro normal)
+    /// - where action=drop (filtro com where)
+    /// - ?action=drop (filtro direto com ?)
+    /// </summary>
+    private void AddParametersToCommand(ITikCommand cmd, List<string> parameters)
+    {
+        if (parameters == null || parameters.Count == 0)
+            return;
+
+        for (int i = 0; i < parameters.Count; i++)
+        {
+            var param = parameters[i].Trim();
+            
+            if (string.IsNullOrWhiteSpace(param))
+                continue;
+
+            // Tratar parâmetros "where" que indicam filtros
+            // Formato: "where action=drop" ou "where chain=output"
+            if (param.Equals("where", StringComparison.OrdinalIgnoreCase))
+            {
+                // O próximo parâmetro deve ser o filtro (ex: "action=drop")
+                if (i + 1 < parameters.Count)
+                {
+                    var filterParam = parameters[i + 1].Trim();
+                    var filterParts = filterParam.Split('=', 2);
+                    
+                    if (filterParts.Length == 2)
+                    {
+                        // Adicionar como query parameter com "?" (ex: ?action=drop)
+                        var filterName = filterParts[0].Trim();
+                        var filterValue = filterParts[1].Trim();
+                        cmd.AddParameter($"?{filterName}", filterValue);
+                        i++; // Pular o próximo parâmetro já que foi processado
+                    }
+                    else
+                    {
+                        // Se não tem "=", pode ser um operador lógico (and, or) - pular
+                        i++;
+                    }
+                }
+            }
+            // Tratar parâmetros que já começam com "?" (filtros diretos)
+            // Formato: "?action=drop"
+            else if (param.StartsWith("?", StringComparison.Ordinal))
+            {
+                var filterParam = param.Substring(1); // Remover o "?"
+                var filterParts = filterParam.Split('=', 2);
+                
+                if (filterParts.Length == 2)
+                {
+                    var filterName = filterParts[0].Trim();
+                    var filterValue = filterParts[1].Trim();
+                    cmd.AddParameter($"?{filterName}", filterValue);
+                }
+            }
+            // Tratar parâmetros normais (ex: "chain=output")
+            else if (param.Contains('='))
+            {
+                var paramParts = param.Split('=', 2);
+                if (paramParts.Length == 2)
+                {
+                    var paramName = paramParts[0].Trim();
+                    var paramValue = paramParts[1].Trim();
+                    cmd.AddParameter(paramName, paramValue);
+                }
+            }
+            // Tratar parâmetros sem valor (flags ou operadores lógicos)
+            else
+            {
+                // Se for "and" ou "or", não adicionar como parâmetro
+                // (esses são tratados automaticamente pela API quando há múltiplos ?param=value)
+                if (!param.Equals("and", StringComparison.OrdinalIgnoreCase) && 
+                    !param.Equals("or", StringComparison.OrdinalIgnoreCase))
+                {
+                    cmd.AddParameter(param, string.Empty);
+                }
+            }
+        }
+    }
+
     public async Task<List<Dictionary<string, string>>> ExecuteCommandAsync(string apiUrl, string username, string password, string command, CancellationToken cancellationToken = default)
     {
         _logger?.LogDebug("Executando comando RouterOS: {Command}", command);
@@ -487,7 +597,17 @@ public class RouterOsClient : IRouterOsClient
             {
                 connection = CreateConnection(apiUrl, username, password);
                 
-                var cmd = connection.CreateCommand(command);
+                // Fazer parsing do comando para separar caminho dos parâmetros
+                var (commandPath, parameters) = ParseRouterOsCommand(command);
+                
+                _logger?.LogDebug("Comando parseado - Path: {Path}, Parâmetros: {Params}", 
+                    commandPath, string.Join(" ", parameters));
+                
+                var cmd = connection.CreateCommand(commandPath);
+                
+                // Adicionar parâmetros ao comando
+                AddParametersToCommand(cmd, parameters);
+                
                 var results = cmd.ExecuteList();
                 
                 var resultList = new List<Dictionary<string, string>>();
@@ -523,7 +643,17 @@ public class RouterOsClient : IRouterOsClient
             {
                 connection = CreateConnection(apiUrl, username, password);
                 
-                var cmd = connection.CreateCommand(command);
+                // Fazer parsing do comando para separar caminho dos parâmetros
+                var (commandPath, parameters) = ParseRouterOsCommand(command);
+                
+                _logger?.LogDebug("Comando parseado - Path: {Path}, Parâmetros: {Params}", 
+                    commandPath, string.Join(" ", parameters));
+                
+                var cmd = connection.CreateCommand(commandPath);
+                
+                // Adicionar parâmetros ao comando
+                AddParametersToCommand(cmd, parameters);
+                
                 cmd.ExecuteNonQuery();
             }
             finally

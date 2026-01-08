@@ -18,6 +18,7 @@ public class RouterDto
     public Guid? VpnNetworkId { get; set; }
     public RouterStatus Status { get; set; }
     public DateTime? LastSeenAt { get; set; }
+    public int? Latency { get; set; }
     public string? HardwareInfo { get; set; }
     public string? Description { get; set; }
     public DateTime CreatedAt { get; set; }

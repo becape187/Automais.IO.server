@@ -329,6 +329,7 @@ public class RouterService : IRouterService
             VpnNetworkId = router.VpnNetworkId,
             Status = router.Status,
             LastSeenAt = router.LastSeenAt,
+            Latency = router.Latency,
             HardwareInfo = router.HardwareInfo,
             Description = router.Description,
             CreatedAt = router.CreatedAt,

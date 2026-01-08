@@ -54,6 +54,9 @@ public class RouterOsClient : IRouterOsClient
         return (host, port);
     }
 
+    /// <summary>
+    /// Cria conexão com RouterOS de forma síncrona (mantido para compatibilidade)
+    /// </summary>
     private ITikConnection CreateConnection(string apiUrl, string username, string password)
     {
         var (host, port) = ParseApiUrl(apiUrl);
@@ -90,6 +93,58 @@ public class RouterOsClient : IRouterOsClient
             }
             throw;
         }
+    }
+    
+    /// <summary>
+    /// Cria conexão com RouterOS de forma assíncrona e protegida com timeout
+    /// </summary>
+    private async Task<ITikConnection> CreateConnectionAsync(
+        string apiUrl, 
+        string username, 
+        string password, 
+        int timeoutSeconds = DefaultTimeoutSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        var (host, port) = ParseApiUrl(apiUrl);
+        var hostWithPort = port == 8728 ? host : $"{host}:{port}";
+        
+        // Executar criação de conexão em thread separada com timeout
+        return await Task.Run(() =>
+        {
+            ITikConnection? connection = null;
+            try
+            {
+                connection = ConnectionFactory.CreateConnection(TikConnectionType.Api);
+                
+                // Abrir conexão (operação síncrona, mas executada em thread separada)
+                connection.Open(hostWithPort, username, password);
+                
+                // Verificar se a conexão está realmente aberta
+                if (!connection.IsOpened)
+                {
+                    connection.Close();
+                    throw new InvalidOperationException("Conexão RouterOS não foi aberta corretamente");
+                }
+                
+                return connection;
+            }
+            catch
+            {
+                // Garantir que a conexão seja fechada em caso de erro
+                try
+                {
+                    if (connection != null && connection.IsOpened)
+                    {
+                        connection.Close();
+                    }
+                }
+                catch
+                {
+                    // Ignorar erros ao fechar conexão corrompida
+                }
+                throw;
+            }
+        }, cancellationToken).WaitAsync(TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
     }
 
     /// <summary>

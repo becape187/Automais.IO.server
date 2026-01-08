@@ -87,7 +87,27 @@ public class RouterStatusMonitorService : BackgroundService
 
             _logger.LogDebug("Verificando status de {Count} roteadores", routerList.Count);
 
-            var tasks = routerList.Select(router => CheckRouterStatusAsync(router, cancellationToken));
+            // Executar verificação de cada router com timeout individual
+            // Cada router tem timeout de 30 segundos para não travar o processo
+            var tasks = routerList.Select(async router =>
+            {
+                try
+                {
+                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                    
+                    await CheckRouterStatusAsync(router, linkedCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogWarning("⏱️ Timeout ao verificar status do router {RouterId} ({Name})", router.Id, router.Name);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "❌ Erro ao verificar status do router {RouterId} ({Name})", router.Id, router.Name);
+                }
+            });
+            
             await Task.WhenAll(tasks);
         }
         catch (Exception ex)
@@ -141,7 +161,9 @@ public class RouterStatusMonitorService : BackgroundService
 
             // Fazer ping no IP - se o ping funcionar, o router está online
             // Tenta até 3 vezes antes de considerar offline
-            var (pingSuccess, latency) = await PingWithRetryAsync(ip, _pingTimeout, maxRetries: 3);
+            // Timeout total de 15 segundos (3 tentativas x 5s cada)
+            var (pingSuccess, latency) = await PingWithRetryAsync(ip, _pingTimeout, maxRetries: 3)
+                .WaitAsync(TimeSpan.FromSeconds(15), cancellationToken);
             
             // Status online baseado na conectividade (ping)
             // A verificação da interface WireGuard é apenas informativa
@@ -149,19 +171,37 @@ public class RouterStatusMonitorService : BackgroundService
             
             if (pingSuccess)
             {
-                // Verificar interface WireGuard apenas para logs informativos
-                var hasWireGuardActive = await CheckWireGuardInterfaceAsync(router, cancellationToken);
-                
-                if (!hasWireGuardActive)
+                // Verificar interface WireGuard apenas para logs informativos (assíncrono e protegido)
+                // Fire-and-forget: não bloqueia o processo principal
+                _ = Task.Run(async () =>
                 {
-                    _logger.LogDebug("Router {RouterId} ({Name}) está online (ping OK) mas interface WireGuard não está ativa no router.", 
-                        router.Id, router.Name);
-                }
-                else
-                {
-                    _logger.LogDebug("Router {RouterId} ({Name}) está online e interface WireGuard está ativa.", 
-                        router.Id, router.Name);
-                }
+                    try
+                    {
+                        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                        
+                        var hasWireGuardActive = await CheckWireGuardInterfaceAsync(router, linkedCts.Token);
+                        
+                        if (!hasWireGuardActive)
+                        {
+                            _logger.LogDebug("Router {RouterId} ({Name}) está online (ping OK) mas interface WireGuard não está ativa no router.", 
+                                router.Id, router.Name);
+                        }
+                        else
+                        {
+                            _logger.LogDebug("Router {RouterId} ({Name}) está online e interface WireGuard está ativa.", 
+                                router.Id, router.Name);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.LogDebug("⏱️ Timeout ao verificar interface WireGuard do router {RouterId}", router.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "⚠️ Erro ao verificar interface WireGuard do router {RouterId}. Continuando operação.", router.Id);
+                    }
+                }, cancellationToken);
             }
             else
             {
@@ -204,20 +244,39 @@ public class RouterStatusMonitorService : BackgroundService
                         router.Id, router.Name, ip);
                 }
 
-                await _hubContext.Clients.All.SendAsync("RouterStatusChanged", new
+                // Enviar atualização via SignalR de forma assíncrona e protegida
+                // Fire-and-forget: não bloqueia o processo principal
+                _ = Task.Run(async () =>
                 {
-                    routerId = router.Id,  // camelCase para compatibilidade com JavaScript
-                    RouterId = router.Id,  // Manter PascalCase para compatibilidade
-                    name = router.Name,
-                    Name = router.Name,
-                    status = newStatus.ToString(),
-                    Status = newStatus.ToString(),
-                    lastSeenAt = router.LastSeenAt,
-                    LastSeenAt = router.LastSeenAt,
-                    latency = router.Latency,
-                    Latency = router.Latency,
-                    previousStatus = previousStatus.ToString(),
-                    PreviousStatus = previousStatus.ToString()
+                    try
+                    {
+                        // Timeout de 5 segundos para evitar travamentos
+                        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                        
+                        await _hubContext.Clients.All.SendAsync("RouterStatusChanged", new
+                        {
+                            routerId = router.Id,
+                            name = router.Name,
+                            status = newStatus.ToString(),
+                            lastSeenAt = router.LastSeenAt,
+                            latency = router.Latency,
+                            previousStatus = previousStatus.ToString()
+                        }, linkedCts.Token);
+                        
+                        _logger.LogDebug("✅ SignalR: Atualização enviada para router {RouterId}", router.Id);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.LogWarning("⏱️ Timeout ao enviar atualização SignalR para router {RouterId}", router.Id);
+                    }
+                    catch (Exception signalREx)
+                    {
+                        // Logar erro mas não derrubar a aplicação
+                        _logger.LogWarning(signalREx, 
+                            "⚠️ Erro ao enviar atualização SignalR para router {RouterId}. Continuando operação.", 
+                            router.Id);
+                    }
                 }, cancellationToken);
             }
             else

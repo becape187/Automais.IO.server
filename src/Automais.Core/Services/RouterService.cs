@@ -201,11 +201,15 @@ public class RouterService : IRouterService
             throw new InvalidOperationException("Credenciais da API RouterOS não configuradas.");
         }
 
+        // Timeout adicional de 15 segundos para não travar a API
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        
         var isConnected = await _routerOsClient.TestConnectionAsync(
             router.RouterOsApiUrl,
             router.RouterOsApiUsername,
             router.RouterOsApiPassword,
-            cancellationToken);
+            linkedCts.Token);
 
         router.Status = isConnected ? RouterStatus.Online : RouterStatus.Offline;
         router.LastSeenAt = isConnected ? DateTime.UtcNow : router.LastSeenAt;
@@ -216,11 +220,15 @@ public class RouterService : IRouterService
         {
             try
             {
+                // Timeout adicional de 15 segundos para não travar a API
+                using var timeoutCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                using var linkedCts2 = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts2.Token);
+                
                 var systemInfo = await _routerOsClient.GetSystemInfoAsync(
                     router.RouterOsApiUrl,
                     router.RouterOsApiUsername,
                     router.RouterOsApiPassword,
-                    cancellationToken);
+                    linkedCts2.Token);
 
                 // Atualizar apenas se não estiverem preenchidos ou se vierem novos dados
                 if (!string.IsNullOrWhiteSpace(systemInfo.Model))

@@ -74,6 +74,11 @@ public class Router
     public DateTime? LastSeenAt { get; set; }
     
     /// <summary>
+    /// Latência do ping em milissegundos (última medição)
+    /// </summary>
+    public int? Latency { get; set; }
+    
+    /// <summary>
     /// Informações de hardware (JSON): CPU, RAM, temperatura, etc
     /// </summary>
     public string? HardwareInfo { get; set; }

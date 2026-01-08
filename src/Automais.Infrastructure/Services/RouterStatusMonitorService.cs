@@ -38,12 +38,12 @@ public class RouterStatusMonitorService : BackgroundService
         _hubContext = hubContext;
         _logger = logger;
         
-        // Intervalo padrão: 30 segundos (configurável via appsettings)
-        var intervalSeconds = configuration?.GetValue<int>("RouterMonitoring:CheckIntervalSeconds") ?? 30;
+        // Intervalo padrão: 10 segundos (configurável via appsettings)
+        var intervalSeconds = configuration?.GetValue<int>("RouterMonitoring:CheckIntervalSeconds") ?? 10;
         _checkInterval = TimeSpan.FromSeconds(intervalSeconds);
         
-        // Timeout do ping: 5 segundos (aumentado para conexões via VPN)
-        _pingTimeout = configuration?.GetValue<int>("RouterMonitoring:PingTimeoutMs") ?? 5000;
+        // Timeout do ping: 3 segundos (configurável via appsettings)
+        _pingTimeout = configuration?.GetValue<int>("RouterMonitoring:PingTimeoutMs") ?? 3000;
         
         _logger.LogInformation("RouterStatusMonitorService inicializado. Intervalo: {Interval}s, Timeout: {Timeout}ms", 
             intervalSeconds, _pingTimeout);
@@ -139,19 +139,27 @@ public class RouterStatusMonitorService : BackgroundService
             _logger.LogDebug("Fazendo ping no router {RouterId} ({Name}) no IP {Ip}", 
                 router.Id, router.Name, ip);
 
-            // Fazer ping no IP
-            var pingSuccess = await PingAsync(ip, _pingTimeout);
+            // Fazer ping no IP - se o ping funcionar, o router está online
+            // Tenta até 3 vezes antes de considerar offline
+            var (pingSuccess, latency) = await PingWithRetryAsync(ip, _pingTimeout, maxRetries: 3);
             
-            // Se o ping funcionou, verificar se a interface WireGuard está ativa
-            var isOnline = false;
+            // Status online baseado na conectividade (ping)
+            // A verificação da interface WireGuard é apenas informativa
+            var isOnline = pingSuccess;
+            
             if (pingSuccess)
             {
-                // Verificar se há interface WireGuard ativa no RouterOS
-                isOnline = await CheckWireGuardInterfaceAsync(router, cancellationToken);
+                // Verificar interface WireGuard apenas para logs informativos
+                var hasWireGuardActive = await CheckWireGuardInterfaceAsync(router, cancellationToken);
                 
-                if (!isOnline)
+                if (!hasWireGuardActive)
                 {
-                    _logger.LogWarning("Router {RouterId} ({Name}) respondeu ao ping mas não possui interface WireGuard ativa. Marcando como offline.", 
+                    _logger.LogDebug("Router {RouterId} ({Name}) está online (ping OK) mas interface WireGuard não está ativa no router.", 
+                        router.Id, router.Name);
+                }
+                else
+                {
+                    _logger.LogDebug("Router {RouterId} ({Name}) está online e interface WireGuard está ativa.", 
                         router.Id, router.Name);
                 }
             }
@@ -171,6 +179,11 @@ public class RouterStatusMonitorService : BackgroundService
             if (isOnline)
             {
                 router.LastSeenAt = DateTime.UtcNow;
+                router.Latency = latency; // Salvar latência quando online
+            }
+            else
+            {
+                router.Latency = null; // Limpar latência quando offline
             }
             router.UpdatedAt = DateTime.UtcNow;
 
@@ -201,6 +214,8 @@ public class RouterStatusMonitorService : BackgroundService
                     Status = newStatus.ToString(),
                     lastSeenAt = router.LastSeenAt,
                     LastSeenAt = router.LastSeenAt,
+                    latency = router.Latency,
+                    Latency = router.Latency,
                     previousStatus = previousStatus.ToString(),
                     PreviousStatus = previousStatus.ToString()
                 }, cancellationToken);
@@ -273,32 +288,70 @@ public class RouterStatusMonitorService : BackgroundService
     }
 
     /// <summary>
-    /// Faz ping em um IP e retorna true se estiver online
+    /// Faz ping em um IP com retry (até 3 tentativas) e retorna (sucesso, latência)
+    /// Se responder na primeira vez, retorna imediatamente
+    /// Se não responder, tenta até maxRetries vezes
     /// </summary>
-    private async Task<bool> PingAsync(string ip, int timeoutMs)
+    private async Task<(bool success, int? latency)> PingWithRetryAsync(string ip, int timeoutMs, int maxRetries = 3)
     {
-        try
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            using var ping = new Ping();
-            var reply = await ping.SendPingAsync(ip, timeoutMs);
-            var isOnline = reply.Status == IPStatus.Success;
-            
-            if (isOnline)
+            try
             {
-                _logger.LogDebug("✅ Ping OK para IP {Ip} - Tempo: {Time}ms", ip, reply.RoundtripTime);
+                using var ping = new Ping();
+                var reply = await ping.SendPingAsync(ip, timeoutMs);
+                var isOnline = reply.Status == IPStatus.Success;
+                
+                if (isOnline)
+                {
+                    var latency = (int)reply.RoundtripTime;
+                    if (attempt > 1)
+                    {
+                        _logger.LogDebug("✅ Ping OK para IP {Ip} na tentativa {Attempt}/{MaxRetries} - Tempo: {Time}ms", 
+                            ip, attempt, maxRetries, latency);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("✅ Ping OK para IP {Ip} - Tempo: {Time}ms", ip, latency);
+                    }
+                    return (true, latency);
+                }
+                else
+                {
+                    if (attempt < maxRetries)
+                    {
+                        _logger.LogDebug("❌ Ping falhou para IP {Ip} na tentativa {Attempt}/{MaxRetries} - Status: {Status}. Tentando novamente...", 
+                            ip, attempt, maxRetries, reply.Status);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("❌ Ping falhou para IP {Ip} após {MaxRetries} tentativas - Status: {Status}", 
+                            ip, maxRetries, reply.Status);
+                    }
+                }
             }
-            else
+            catch (Exception ex)
             {
-                _logger.LogDebug("❌ Ping falhou para IP {Ip} - Status: {Status}", ip, reply.Status);
+                if (attempt < maxRetries)
+                {
+                    _logger.LogDebug(ex, "❌ Exceção ao fazer ping no IP {Ip} na tentativa {Attempt}/{MaxRetries}: {Message}. Tentando novamente...", 
+                        ip, attempt, maxRetries, ex.Message);
+                }
+                else
+                {
+                    _logger.LogDebug(ex, "❌ Exceção ao fazer ping no IP {Ip} após {MaxRetries} tentativas: {Message}", 
+                        ip, maxRetries, ex.Message);
+                }
             }
             
-            return isOnline;
+            // Aguardar um pouco antes da próxima tentativa (apenas se não for a última)
+            if (attempt < maxRetries)
+            {
+                await Task.Delay(500); // 500ms entre tentativas
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "❌ Exceção ao fazer ping no IP {Ip}: {Message}", ip, ex.Message);
-            return false;
-        }
+        
+        return (false, null);
     }
 
     /// <summary>

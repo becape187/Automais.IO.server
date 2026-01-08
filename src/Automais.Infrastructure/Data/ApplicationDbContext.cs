@@ -342,6 +342,8 @@ public class ApplicationDbContext : DbContext
                 .IsRequired()
                 .HasConversion<string>();
 
+            entity.Property(e => e.Latency);
+
             entity.Property(e => e.CreatedAt).IsRequired();
             entity.Property(e => e.UpdatedAt).IsRequired();
 

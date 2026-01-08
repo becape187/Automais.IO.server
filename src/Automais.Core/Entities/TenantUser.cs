@@ -15,6 +15,7 @@ public class TenantUser
     public bool VpnEnabled { get; set; }
     public string? VpnDeviceName { get; set; }
     public string? VpnPublicKey { get; set; }
+    public string? VpnPrivateKey { get; set; }
     public string? VpnIpAddress { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }

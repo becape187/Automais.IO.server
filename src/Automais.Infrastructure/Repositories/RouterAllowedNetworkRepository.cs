@@ -27,8 +27,19 @@ public class RouterAllowedNetworkRepository : IRouterAllowedNetworkRepository
     public async Task<IEnumerable<RouterAllowedNetwork>> GetByRouterIdAsync(Guid routerId, CancellationToken cancellationToken = default)
     {
         return await _context.Set<RouterAllowedNetwork>()
+            .Include(n => n.Router)
             .Where(n => n.RouterId == routerId)
             .OrderBy(n => n.CreatedAt)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<IEnumerable<RouterAllowedNetwork>> GetAllByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default)
+    {
+        return await _context.Set<RouterAllowedNetwork>()
+            .Include(n => n.Router)
+            .Where(n => n.Router.TenantId == tenantId)
+            .OrderBy(n => n.Router.Name)
+            .ThenBy(n => n.NetworkCidr)
             .ToListAsync(cancellationToken);
     }
 

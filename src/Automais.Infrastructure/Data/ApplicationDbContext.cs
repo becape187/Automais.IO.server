@@ -23,6 +23,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<Router> Routers => Set<Router>();
     public DbSet<RouterWireGuardPeer> RouterWireGuardPeers => Set<RouterWireGuardPeer>();
     public DbSet<RouterAllowedNetwork> RouterAllowedNetworks => Set<RouterAllowedNetwork>();
+    public DbSet<UserAllowedRoute> UserAllowedRoutes => Set<UserAllowedRoute>();
     public DbSet<RouterConfigLog> RouterConfigLogs => Set<RouterConfigLog>();
     public DbSet<RouterBackup> RouterBackups => Set<RouterBackup>();
 
@@ -428,6 +429,48 @@ public class ApplicationDbContext : DbContext
             entity.HasIndex(e => new { e.RouterId, e.NetworkCidr })
                 .IsUnique();
 
+            entity.HasIndex(e => e.RouterId);
+        });
+
+        // Configuração de UserAllowedRoute
+        modelBuilder.Entity<UserAllowedRoute>(entity =>
+        {
+            entity.ToTable("user_allowed_routes");
+
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.UserId).IsRequired();
+            entity.Property(e => e.RouterId).IsRequired();
+            entity.Property(e => e.RouterAllowedNetworkId).IsRequired();
+            entity.Property(e => e.NetworkCidr)
+                .IsRequired()
+                .HasMaxLength(50);
+
+            entity.Property(e => e.Description)
+                .HasMaxLength(255);
+
+            entity.Property(e => e.CreatedAt).IsRequired();
+            entity.Property(e => e.UpdatedAt).IsRequired();
+
+            entity.HasOne(e => e.User)
+                .WithMany()
+                .HasForeignKey(e => e.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Router)
+                .WithMany()
+                .HasForeignKey(e => e.RouterId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.RouterAllowedNetwork)
+                .WithMany()
+                .HasForeignKey(e => e.RouterAllowedNetworkId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(e => new { e.UserId, e.RouterAllowedNetworkId })
+                .IsUnique();
+
+            entity.HasIndex(e => e.UserId);
             entity.HasIndex(e => e.RouterId);
         });
 

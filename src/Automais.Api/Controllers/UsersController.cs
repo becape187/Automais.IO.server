@@ -10,13 +10,19 @@ namespace Automais.Api.Controllers;
 public class UsersController : ControllerBase
 {
     private readonly ITenantUserService _tenantUserService;
+    private readonly IUserAllowedRouteRepository _userAllowedRouteRepository;
+    private readonly IRouterAllowedNetworkRepository _routerAllowedNetworkRepository;
     private readonly ILogger<UsersController> _logger;
 
     public UsersController(
         ITenantUserService tenantUserService,
+        IUserAllowedRouteRepository userAllowedRouteRepository,
+        IRouterAllowedNetworkRepository routerAllowedNetworkRepository,
         ILogger<UsersController> logger)
     {
         _tenantUserService = tenantUserService;
+        _userAllowedRouteRepository = userAllowedRouteRepository;
+        _routerAllowedNetworkRepository = routerAllowedNetworkRepository;
         _logger = logger;
     }
 
@@ -110,6 +116,85 @@ public class UsersController : ControllerBase
     {
         await _tenantUserService.DeleteAsync(id, cancellationToken);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Obtém todas as rotas disponíveis de todos os routers do tenant
+    /// </summary>
+    [HttpGet("tenants/{tenantId:guid}/routes")]
+    public async Task<ActionResult<IEnumerable<RouterRouteDto>>> GetAvailableRoutes(Guid tenantId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Buscar todos os routers do tenant e suas redes permitidas
+            var routers = await _routerAllowedNetworkRepository.GetAllByTenantIdAsync(tenantId, cancellationToken);
+            
+            var routes = routers.Select(r => new RouterRouteDto
+            {
+                RouterAllowedNetworkId = r.Id,
+                RouterId = r.RouterId,
+                RouterName = r.Router?.Name ?? "Unknown",
+                NetworkCidr = r.NetworkCidr,
+                Description = r.Description
+            }).ToList();
+
+            return Ok(routes);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao listar rotas disponíveis do tenant {TenantId}", tenantId);
+            return StatusCode(500, new { message = "Erro interno do servidor", error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Obtém rotas permitidas de um usuário
+    /// </summary>
+    [HttpGet("users/{id:guid}/routes")]
+    public async Task<ActionResult<IEnumerable<RouterRouteDto>>> GetUserRoutes(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var routes = await _userAllowedRouteRepository.GetByUserIdAsync(id, cancellationToken);
+            var routesDto = routes.Select(r => new RouterRouteDto
+            {
+                RouterAllowedNetworkId = r.RouterAllowedNetworkId,
+                RouterId = r.RouterId,
+                RouterName = r.Router?.Name ?? "Unknown",
+                NetworkCidr = r.NetworkCidr,
+                Description = r.Description
+            }).ToList();
+
+            return Ok(routesDto);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao listar rotas do usuário {UserId}", id);
+            return StatusCode(500, new { message = "Erro interno do servidor", error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Atualiza rotas permitidas de um usuário
+    /// </summary>
+    [HttpPut("users/{id:guid}/routes")]
+    public async Task<IActionResult> UpdateUserRoutes(Guid id, [FromBody] UpdateUserRoutesDto dto, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _userAllowedRouteRepository.ReplaceUserRoutesAsync(id, dto.RouterAllowedNetworkIds, cancellationToken);
+            return NoContent();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Erro ao atualizar rotas do usuário {UserId}", id);
+            return NotFound(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao atualizar rotas do usuário {UserId}", id);
+            return StatusCode(500, new { message = "Erro interno do servidor", error = ex.Message });
+        }
     }
 }
 

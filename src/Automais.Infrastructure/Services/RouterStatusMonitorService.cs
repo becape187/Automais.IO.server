@@ -18,6 +18,7 @@ public class RouterStatusMonitorService : BackgroundService
 {
     private readonly IRouterRepository _routerRepository;
     private readonly IRouterWireGuardPeerRepository _peerRepository;
+    private readonly IRouterOsClient _routerOsClient;
     private readonly IHubContext<RouterStatusHub> _hubContext;
     private readonly ILogger<RouterStatusMonitorService> _logger;
     private readonly TimeSpan _checkInterval;
@@ -26,12 +27,14 @@ public class RouterStatusMonitorService : BackgroundService
     public RouterStatusMonitorService(
         IRouterRepository routerRepository,
         IRouterWireGuardPeerRepository peerRepository,
+        IRouterOsClient routerOsClient,
         IHubContext<RouterStatusHub> hubContext,
         ILogger<RouterStatusMonitorService> logger,
         IConfiguration configuration)
     {
         _routerRepository = routerRepository;
         _peerRepository = peerRepository;
+        _routerOsClient = routerOsClient;
         _hubContext = hubContext;
         _logger = logger;
         
@@ -137,7 +140,26 @@ public class RouterStatusMonitorService : BackgroundService
                 router.Id, router.Name, ip);
 
             // Fazer ping no IP
-            var isOnline = await PingAsync(ip, _pingTimeout);
+            var pingSuccess = await PingAsync(ip, _pingTimeout);
+            
+            // Se o ping funcionou, verificar se a interface WireGuard está ativa
+            var isOnline = false;
+            if (pingSuccess)
+            {
+                // Verificar se há interface WireGuard ativa no RouterOS
+                isOnline = await CheckWireGuardInterfaceAsync(router, cancellationToken);
+                
+                if (!isOnline)
+                {
+                    _logger.LogWarning("Router {RouterId} ({Name}) respondeu ao ping mas não possui interface WireGuard ativa. Marcando como offline.", 
+                        router.Id, router.Name);
+                }
+            }
+            else
+            {
+                _logger.LogDebug("Router {RouterId} ({Name}) não respondeu ao ping. Marcando como offline.", 
+                    router.Id, router.Name);
+            }
 
             // Determinar novo status
             var previousStatus = router.Status;
@@ -171,10 +193,15 @@ public class RouterStatusMonitorService : BackgroundService
 
                 await _hubContext.Clients.All.SendAsync("RouterStatusChanged", new
                 {
-                    RouterId = router.Id,
+                    routerId = router.Id,  // camelCase para compatibilidade com JavaScript
+                    RouterId = router.Id,  // Manter PascalCase para compatibilidade
+                    name = router.Name,
                     Name = router.Name,
+                    status = newStatus.ToString(),
                     Status = newStatus.ToString(),
+                    lastSeenAt = router.LastSeenAt,
                     LastSeenAt = router.LastSeenAt,
+                    previousStatus = previousStatus.ToString(),
                     PreviousStatus = previousStatus.ToString()
                 }, cancellationToken);
             }
@@ -270,6 +297,103 @@ public class RouterStatusMonitorService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "❌ Exceção ao fazer ping no IP {Ip}: {Message}", ip, ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Verifica se há interface WireGuard ativa no RouterOS
+    /// </summary>
+    private async Task<bool> CheckWireGuardInterfaceAsync(Router router, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Verificar se temos credenciais da API RouterOS
+            if (string.IsNullOrWhiteSpace(router.RouterOsApiUrl) ||
+                string.IsNullOrWhiteSpace(router.RouterOsApiUsername) ||
+                string.IsNullOrWhiteSpace(router.RouterOsApiPassword))
+            {
+                _logger.LogDebug("Router {RouterId} não possui credenciais RouterOS. Considerando offline.", router.Id);
+                return false;
+            }
+
+            // Construir URL da API
+            var apiUrl = router.RouterOsApiUrl;
+            if (string.IsNullOrWhiteSpace(apiUrl))
+            {
+                // Tentar buscar IP do peer WireGuard
+                var peers = await _peerRepository.GetByRouterIdAsync(router.Id, cancellationToken);
+                var peerList = peers.ToList();
+                
+                if (peerList.Any())
+                {
+                    var firstPeer = peerList.First();
+                    if (!string.IsNullOrWhiteSpace(firstPeer.AllowedIps))
+                    {
+                        var allowedIps = firstPeer.AllowedIps.Split(',')[0].Trim();
+                        var ipParts = allowedIps.Split('/');
+                        var ip = ipParts[0].Trim();
+                        apiUrl = $"{ip}:8728";
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(apiUrl))
+            {
+                _logger.LogDebug("Router {RouterId} não possui URL da API RouterOS. Considerando offline.", router.Id);
+                return false;
+            }
+
+            // Verificar se há interfaces WireGuard ativas
+            var interfaces = await _routerOsClient.ExecuteCommandAsync(
+                apiUrl,
+                router.RouterOsApiUsername,
+                router.RouterOsApiPassword,
+                "/interface/wireguard/print",
+                cancellationToken);
+
+            // Log detalhado das interfaces encontradas
+            if (interfaces.Count == 0)
+            {
+                _logger.LogWarning("❌ Router {RouterId} não possui interfaces WireGuard configuradas", router.Id);
+                return false;
+            }
+
+            // Verificar se há pelo menos uma interface WireGuard com running=true
+            var activeInterfaces = interfaces.Where(iface => 
+            {
+                var hasRunning = iface.TryGetValue("running", out var running);
+                var isRunning = hasRunning && running?.ToLowerInvariant() == "true";
+                
+                // Log detalhado de cada interface
+                var interfaceName = iface.TryGetValue("name", out var name) ? name : "sem nome";
+                var disabled = iface.TryGetValue("disabled", out var disabledValue) && 
+                              disabledValue?.ToLowerInvariant() == "true";
+                
+                _logger.LogDebug("Interface WireGuard {Name} - running: {Running}, disabled: {Disabled}", 
+                    interfaceName, running ?? "n/a", disabledValue ?? "n/a");
+                
+                return isRunning && !disabled;
+            }).ToList();
+
+            var hasActiveInterface = activeInterfaces.Any();
+
+            if (hasActiveInterface)
+            {
+                _logger.LogInformation("✅ Router {RouterId} possui {Count} interface(s) WireGuard ativa(s)", 
+                    router.Id, activeInterfaces.Count);
+                return true;
+            }
+            else
+            {
+                _logger.LogWarning("❌ Router {RouterId} não possui interface WireGuard ativa. Total de interfaces: {Count} (todas desativadas ou não rodando)", 
+                    router.Id, interfaces.Count);
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Erro ao verificar interface WireGuard do router {RouterId}. Considerando offline.", router.Id);
             return false;
         }
     }

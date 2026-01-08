@@ -253,6 +253,7 @@ builder.Services.AddScoped<IVpnNetworkRepository, VpnNetworkRepository>();
 builder.Services.AddScoped<IRouterRepository, RouterRepository>();
 builder.Services.AddScoped<IRouterWireGuardPeerRepository, RouterWireGuardPeerRepository>();
 builder.Services.AddScoped<IRouterAllowedNetworkRepository, RouterAllowedNetworkRepository>();
+builder.Services.AddScoped<IUserAllowedRouteRepository, Automais.Infrastructure.Repositories.UserAllowedRouteRepository>();
 builder.Services.AddScoped<IRouterConfigLogRepository, RouterConfigLogRepository>();
 builder.Services.AddScoped<IRouterBackupRepository, RouterBackupRepository>();
 
@@ -269,6 +270,8 @@ builder.Services.Configure<WireGuardSettings>(
 builder.Services.AddScoped<IVpnNetworkService, VpnNetworkService>();
 builder.Services.AddScoped<IRouterService, RouterService>();
 builder.Services.AddScoped<IWireGuardServerService, WireGuardServerService>();
+builder.Services.AddScoped<IAuthService, Automais.Infrastructure.Services.AuthService>();
+builder.Services.AddScoped<IUserVpnService, Automais.Infrastructure.Services.UserVpnService>();
 builder.Services.AddScoped<IRouterWireGuardService>(sp =>
 {
     var peerRepo = sp.GetRequiredService<IRouterWireGuardPeerRepository>();

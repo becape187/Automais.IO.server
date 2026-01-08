@@ -1,3 +1,4 @@
+using System;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 
@@ -13,6 +14,16 @@ public class InMemoryTenantUserRepository : ITenantUserRepository
         lock (_lock)
         {
             var user = _users.FirstOrDefault(u => u.Id == id);
+            return Task.FromResult(user);
+        }
+    }
+
+    public Task<TenantUser?> GetByEmailAsync(string email, CancellationToken cancellationToken = default)
+    {
+        lock (_lock)
+        {
+            var user = _users.FirstOrDefault(u => 
+                u.Email.Equals(email, StringComparison.OrdinalIgnoreCase));
             return Task.FromResult(user);
         }
     }

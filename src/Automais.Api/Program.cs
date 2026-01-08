@@ -13,6 +13,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -336,6 +338,49 @@ builder.WebHost.ConfigureKestrel(options =>
 {
     options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(2);
     options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(30);
+    
+    // Configurar HTTPS apenas em produção usando certificado Let's Encrypt
+    if (builder.Environment.IsProduction())
+    {
+        var certPath = "/etc/letsencrypt/live/automais.io";
+        var certFile = Path.Combine(certPath, "fullchain.pem");
+        var keyFile = Path.Combine(certPath, "privkey.pem");
+        
+        if (File.Exists(certFile) && File.Exists(keyFile))
+        {
+            try
+            {
+                // Ler certificado e chave privada em formato PEM
+                var certContent = File.ReadAllText(certFile);
+                var keyContent = File.ReadAllText(keyFile);
+                
+                // Converter PEM para X509Certificate2
+                var certificate = X509Certificate2.CreateFromPem(certContent, keyContent);
+                
+                // Configurar HTTPS na porta 5001
+                options.Listen(IPAddress.Any, 5001, listenOptions =>
+                {
+                    listenOptions.UseHttps(certificate);
+                });
+                
+                Console.WriteLine("✅ HTTPS configurado na porta 5001 usando certificado Let's Encrypt");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Erro ao configurar HTTPS: {ex.Message}");
+                Console.WriteLine("⚠️ Continuando apenas com HTTP (porta 5000)");
+            }
+        }
+        else
+        {
+            Console.WriteLine($"⚠️ Certificados não encontrados em {certPath}");
+            Console.WriteLine("⚠️ Continuando apenas com HTTP (porta 5000)");
+        }
+    }
+    else
+    {
+        Console.WriteLine("🔧 Ambiente de desenvolvimento - HTTPS não configurado");
+    }
 });
 
 // Swagger/OpenAPI
@@ -359,7 +404,9 @@ builder.Services.AddCors(options =>
                 "http://localhost:3000", 
                 "http://localhost:5173",
                 "https://automais.io",
-                "https://www.automais.io"
+                "https://www.automais.io",
+                "https://automais.io:5001",
+                "https://www.automais.io:5001"
               )
               .AllowAnyMethod()
               .AllowAnyHeader()
@@ -617,8 +664,17 @@ app.MapGet("/health", async (ApplicationDbContext dbContext, ILogger<Program> he
 });
 
 Console.WriteLine("\n🚀 API rodando!");
-Console.WriteLine($"📝 Swagger: http://localhost:5000/swagger ou https://localhost:5001/swagger");
-Console.WriteLine($"❤️  Health: http://localhost:5000/health");
+if (app.Environment.IsProduction())
+{
+    Console.WriteLine($"🔒 HTTPS: https://automais.io:5001");
+    Console.WriteLine($"📝 Swagger: https://automais.io:5001/swagger");
+    Console.WriteLine($"❤️  Health: https://automais.io:5001/health");
+}
+else
+{
+    Console.WriteLine($"📝 Swagger: http://localhost:5000/swagger ou https://localhost:5001/swagger");
+    Console.WriteLine($"❤️  Health: http://localhost:5000/health");
+}
 Console.WriteLine($"💾 Modo: Postgres (DigitalOcean)");
 Console.WriteLine($"📡 ChirpStack: {chirpStackUrl}\n");
 

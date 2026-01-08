@@ -167,7 +167,7 @@ public class RouterOsClient : IRouterOsClient
             if (!isAuthenticated)
             {
                 _logger?.LogWarning("Falha na autenticação RouterOS para {Username} em {Host}:{Port}. Respostas: {Responses}", 
-                    username, host, port, string.Join(", ", responses));
+                    username, host, port, string.Join(", ", authResponses));
             }
             else
             {

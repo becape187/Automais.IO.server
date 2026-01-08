@@ -214,11 +214,14 @@ public class RouterOsClient : IRouterOsClient
                 
                 if (resource != null)
                 {
+                    systemInfo.BoardName = resource.GetResponseField("board-name");
                     systemInfo.Model = resource.GetResponseField("board-name") ?? resource.GetResponseField("platform");
                     systemInfo.SerialNumber = resource.GetResponseField("serial-number");
                     systemInfo.FirmwareVersion = resource.GetResponseField("version");
                     systemInfo.CpuLoad = resource.GetResponseField("cpu-load");
                     systemInfo.MemoryUsage = resource.GetResponseField("free-memory");
+                    systemInfo.TotalMemory = resource.GetResponseField("total-memory");
+                    systemInfo.Temperature = resource.GetResponseField("temperature");
                     systemInfo.Uptime = resource.GetResponseField("uptime");
                 }
                 

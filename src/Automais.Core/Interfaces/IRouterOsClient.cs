@@ -37,8 +37,10 @@ public class RouterOsSystemInfo
     public string? FirmwareVersion { get; set; }
     public string? CpuLoad { get; set; }
     public string? MemoryUsage { get; set; }
+    public string? TotalMemory { get; set; }
     public string? Temperature { get; set; }
     public string? Uptime { get; set; }
+    public string? BoardName { get; set; }
 }
 
 /// <summary>

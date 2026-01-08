@@ -280,8 +280,7 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
     return new Automais.Core.Services.RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, wireGuardServerService, logger);
 });
 
-// SignalR para notificações em tempo real
-builder.Services.AddSignalR();
+// SignalR para notificações em tempo real (configuração adicional abaixo)
 
 // Serviço de sincronização do WireGuard (executa na inicialização)
 builder.Services.AddHostedService<WireGuardSyncService>();
@@ -522,13 +521,21 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "swagger"; // Swagger em /swagger
 });
 
-// CORS deve vir antes de UseAuthorization
-app.UseCors("AllowFrontend");
-app.UseAuthorization();
-app.MapControllers();
+// Routing deve vir antes dos mapeamentos
+app.UseRouting();
 
-// SignalR Hub
+// CORS deve vir depois de UseRouting e antes de UseAuthorization
+// IMPORTANTE: SignalR precisa de CORS configurado corretamente
+app.UseCors("AllowFrontend");
+
+// Authorization (opcional para SignalR, mas necessário para APIs)
+app.UseAuthorization();
+
+// Mapear endpoints - SignalR deve vir ANTES de MapControllers para evitar conflitos
 app.MapHub<Automais.Core.Hubs.RouterStatusHub>("/hubs/router-status");
+
+// Mapear controllers
+app.MapControllers();
 
 // Endpoint de tratamento de erros (mantido para compatibilidade, mas o middleware acima já trata)
 

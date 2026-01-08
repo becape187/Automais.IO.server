@@ -138,8 +138,8 @@ public class RouterManagementController : ControllerBase
                         router.RouterOsApiPassword,
                         cancellationToken);
 
-                    // Atualizar informações no banco
-                    router.Model = systemInfo.Model ?? router.Model;
+                    // Atualizar informações no banco (usar board-name para Model)
+                    router.Model = systemInfo.BoardName ?? systemInfo.Model ?? router.Model;
                     router.SerialNumber = systemInfo.SerialNumber ?? router.SerialNumber;
                     router.FirmwareVersion = systemInfo.FirmwareVersion ?? router.FirmwareVersion;
                     
@@ -148,6 +148,7 @@ public class RouterManagementController : ControllerBase
                     {
                         cpuLoad = systemInfo.CpuLoad,
                         memoryUsage = systemInfo.MemoryUsage,
+                        totalMemory = systemInfo.TotalMemory,
                         uptime = systemInfo.Uptime,
                         temperature = systemInfo.Temperature,
                         lastUpdated = DateTime.UtcNow
@@ -175,6 +176,17 @@ public class RouterManagementController : ControllerBase
                 await _routerRepository.UpdateAsync(router, cancellationToken);
             }
 
+            // Buscar informações do sistema se conectado
+            object? hardwareInfoObj = null;
+            if (isConnected && router.HardwareInfo != null)
+            {
+                try
+                {
+                    hardwareInfoObj = JsonSerializer.Deserialize<object>(router.HardwareInfo);
+                }
+                catch { }
+            }
+
             return Ok(new
             {
                 connected = isConnected,
@@ -185,7 +197,7 @@ public class RouterManagementController : ControllerBase
                 model = router.Model,
                 serialNumber = router.SerialNumber,
                 firmwareVersion = router.FirmwareVersion,
-                hardwareInfo = router.HardwareInfo != null ? JsonSerializer.Deserialize<object>(router.HardwareInfo) : null
+                hardwareInfo = hardwareInfoObj
             });
         }
         catch (Exception ex)
@@ -376,6 +388,64 @@ public class RouterManagementController : ControllerBase
     }
 
     /// <summary>
+    /// Busca dados dinâmicos do sistema (CPU, memória, interfaces) para atualização em tempo real
+    /// </summary>
+    [HttpGet("dynamic-data")]
+    public async Task<ActionResult<object>> GetDynamicData(Guid routerId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
+            if (routerData == null) return NotFound(new { message = "Router não encontrado" });
+
+            var router = routerData.Value.router;
+            var apiUrl = routerData.Value.apiUrl;
+
+            // Buscar informações do sistema
+            var systemInfo = await _routerOsClient.GetSystemInfoAsync(
+                apiUrl,
+                router.RouterOsApiUsername!,
+                router.RouterOsApiPassword!,
+                cancellationToken);
+
+            // Buscar interfaces para tráfego
+            var interfaces = await _routerOsClient.ExecuteCommandAsync(
+                apiUrl,
+                router.RouterOsApiUsername!,
+                router.RouterOsApiPassword!,
+                "/interface/print",
+                cancellationToken);
+
+            return Ok(new
+            {
+                systemInfo = new
+                {
+                    cpuLoad = systemInfo.CpuLoad,
+                    freeMemory = systemInfo.MemoryUsage,
+                    totalMemory = systemInfo.TotalMemory,
+                    temperature = systemInfo.Temperature,
+                    uptime = systemInfo.Uptime
+                },
+                interfaces = interfaces.Select(i => new
+                {
+                    name = i.ContainsKey("name") ? i["name"] : null,
+                    rxByte = i.ContainsKey("rx-byte") ? i["rx-byte"] : null,
+                    txByte = i.ContainsKey("tx-byte") ? i["tx-byte"] : null,
+                    rxPacket = i.ContainsKey("rx-packet") ? i["rx-packet"] : null,
+                    txPacket = i.ContainsKey("tx-packet") ? i["tx-packet"] : null,
+                    running = i.ContainsKey("running") ? i["running"] : null
+                }).ToList(),
+                timestamp = DateTime.UtcNow
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao buscar dados dinâmicos do router {RouterId}", routerId);
+            return StatusCode(500, new { message = "Erro ao buscar dados dinâmicos", detail = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Atualiza informações do sistema do router (Model, SerialNumber, FirmwareVersion, etc)
     /// </summary>
     [HttpPost("system-info/refresh")]
@@ -398,8 +468,8 @@ public class RouterManagementController : ControllerBase
                 router.RouterOsApiPassword!,
                 cancellationToken);
 
-            // Atualizar informações no banco
-            router.Model = systemInfo.Model ?? router.Model;
+            // Atualizar informações no banco (usar board-name para Model)
+            router.Model = systemInfo.BoardName ?? systemInfo.Model ?? router.Model;
             router.SerialNumber = systemInfo.SerialNumber ?? router.SerialNumber;
             router.FirmwareVersion = systemInfo.FirmwareVersion ?? router.FirmwareVersion;
             
@@ -408,6 +478,7 @@ public class RouterManagementController : ControllerBase
             {
                 cpuLoad = systemInfo.CpuLoad,
                 memoryUsage = systemInfo.MemoryUsage,
+                totalMemory = systemInfo.TotalMemory,
                 uptime = systemInfo.Uptime,
                 temperature = systemInfo.Temperature,
                 lastUpdated = DateTime.UtcNow

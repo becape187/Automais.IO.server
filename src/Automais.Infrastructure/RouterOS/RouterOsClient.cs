@@ -2,6 +2,7 @@ using Automais.Core.Interfaces;
 using Microsoft.Extensions.Logging;
 using System.Linq;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Automais.Infrastructure.RouterOS;
@@ -66,48 +67,88 @@ public class RouterOsClient : IRouterOsClient
             
             var stream = client.GetStream();
             
-            // Protocolo RouterOS API:
-            // 1. Enviar palavra vazia para iniciar (alguns servidores esperam isso)
+            // Protocolo RouterOS API com autenticação MD5 challenge/response:
+            // 1. Enviar palavra vazia para iniciar
             await WriteWordAsync(stream, "", timeoutCts.Token).ConfigureAwait(false);
             
-            // 2. Tentar ler resposta inicial (pode não haver resposta imediata)
-            // Usar Task.WhenAny para não travar se não houver resposta
-            var readInitialTask = ReadWordAsync(stream, timeoutCts.Token);
-            var delayTask = Task.Delay(500, timeoutCts.Token); // Esperar até 500ms por resposta inicial
-            var initialCompleted = await Task.WhenAny(readInitialTask, delayTask).ConfigureAwait(false);
-            
-            if (initialCompleted == readInitialTask)
+            // 2. Ler resposta inicial (pode conter informações do servidor)
+            var initialResponses = new List<string>();
+            for (int i = 0; i < 5; i++)
             {
-                var initialResponse = await readInitialTask.ConfigureAwait(false);
-                _logger?.LogDebug("Resposta inicial RouterOS: {Response}", initialResponse ?? "(null)");
-            }
-            else
-            {
-                _logger?.LogDebug("Nenhuma resposta inicial do RouterOS (normal)");
+                var response = await ReadWordAsync(stream, timeoutCts.Token).ConfigureAwait(false);
+                if (response == null || response.StartsWith("!done"))
+                    break;
+                initialResponses.Add(response);
+                _logger?.LogDebug("Resposta inicial RouterOS [{Index}]: {Response}", i, response);
             }
             
-            // 3. Enviar comando de login
+            // 3. Enviar comando de login com username
             await WriteWordAsync(stream, "/login", timeoutCts.Token).ConfigureAwait(false);
             await WriteWordAsync(stream, $"=name={username}", timeoutCts.Token).ConfigureAwait(false);
-            await WriteWordAsync(stream, $"=password={password}", timeoutCts.Token).ConfigureAwait(false);
             await WriteWordAsync(stream, "", timeoutCts.Token).ConfigureAwait(false); // Finalizar comando
             
-            // 4. Ler todas as respostas até encontrar !done ou !trap
-            var isAuthenticated = false;
-            var responses = new List<string>();
-            
-            // Ler até 10 palavras de resposta (limite de segurança)
+            // 4. Ler challenge do servidor (formato: =ret=xxxxxxxxxxxxxxxx)
+            string? challenge = null;
+            var loginResponses = new List<string>();
             for (int i = 0; i < 10; i++)
             {
                 var response = await ReadWordAsync(stream, timeoutCts.Token).ConfigureAwait(false);
-                if (response == null) 
+                if (response == null)
+                    break;
+                    
+                loginResponses.Add(response);
+                _logger?.LogDebug("Resposta login RouterOS [{Index}]: {Response}", i, response);
+                
+                if (response.StartsWith("=ret="))
                 {
-                    _logger?.LogDebug("Nenhuma resposta adicional (i={I})", i);
+                    challenge = response.Substring(5); // Remove "=ret="
                     break;
                 }
-                
-                responses.Add(response);
-                _logger?.LogDebug("Resposta RouterOS [{Index}]: {Response}", i, response);
+                if (response.StartsWith("!trap"))
+                {
+                    var trapMessage = loginResponses.FirstOrDefault(r => r.StartsWith("=message="));
+                    _logger?.LogWarning("RouterOS retornou !trap no login: {Message}", trapMessage ?? "sem mensagem");
+                    return false;
+                }
+            }
+            
+            if (string.IsNullOrEmpty(challenge))
+            {
+                _logger?.LogWarning("Não recebeu challenge do RouterOS. Respostas: {Responses}", string.Join(", ", loginResponses));
+                return false;
+            }
+            
+            // 5. Calcular MD5(challenge + password) e enviar resposta
+            var challengeBytes = Encoding.UTF8.GetBytes(challenge);
+            var passwordBytes = Encoding.UTF8.GetBytes(password);
+            var combined = new byte[challengeBytes.Length + passwordBytes.Length];
+            Buffer.BlockCopy(challengeBytes, 0, combined, 0, challengeBytes.Length);
+            Buffer.BlockCopy(passwordBytes, 0, combined, challengeBytes.Length, passwordBytes.Length);
+            
+            byte[] hashBytes;
+            using (var md5 = MD5.Create())
+            {
+                hashBytes = md5.ComputeHash(combined);
+            }
+            
+            // Converter hash para string hexadecimal (lowercase)
+            var responseHash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+            
+            // 6. Enviar resposta do challenge
+            await WriteWordAsync(stream, $"=response={responseHash}", timeoutCts.Token).ConfigureAwait(false);
+            await WriteWordAsync(stream, "", timeoutCts.Token).ConfigureAwait(false); // Finalizar comando
+            
+            // 7. Ler resposta final de autenticação
+            var isAuthenticated = false;
+            var authResponses = new List<string>();
+            for (int i = 0; i < 10; i++)
+            {
+                var response = await ReadWordAsync(stream, timeoutCts.Token).ConfigureAwait(false);
+                if (response == null)
+                    break;
+                    
+                authResponses.Add(response);
+                _logger?.LogDebug("Resposta autenticação RouterOS [{Index}]: {Response}", i, response);
                 
                 if (response.StartsWith("!done"))
                 {
@@ -117,8 +158,8 @@ public class RouterOsClient : IRouterOsClient
                 if (response.StartsWith("!trap"))
                 {
                     isAuthenticated = false;
-                    var trapMessage = responses.FirstOrDefault(r => r.StartsWith("=message="));
-                    _logger?.LogWarning("RouterOS retornou !trap: {Message}", trapMessage ?? "sem mensagem");
+                    var trapMessage = authResponses.FirstOrDefault(r => r.StartsWith("=message="));
+                    _logger?.LogWarning("RouterOS retornou !trap na autenticação: {Message}", trapMessage ?? "sem mensagem");
                     break;
                 }
             }

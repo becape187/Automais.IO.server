@@ -58,14 +58,79 @@ public class RouterOsClient : IRouterOsClient
     {
         var (host, port) = ParseApiUrl(apiUrl);
         var connection = ConnectionFactory.CreateConnection(TikConnectionType.Api);
-        // Incluir porta no host se não for a porta padrão (8728)
-        var hostWithPort = port == 8728 ? host : $"{host}:{port}";
-        connection.Open(hostWithPort, username, password);
-        return connection;
+        
+        try
+        {
+            // Incluir porta no host se não for a porta padrão (8728)
+            var hostWithPort = port == 8728 ? host : $"{host}:{port}";
+            connection.Open(hostWithPort, username, password);
+            
+            // Verificar se a conexão está realmente aberta
+            if (!connection.IsOpened)
+            {
+                connection.Close();
+                throw new InvalidOperationException("Conexão RouterOS não foi aberta corretamente");
+            }
+            
+            return connection;
+        }
+        catch
+        {
+            // Garantir que a conexão seja fechada em caso de erro
+            try
+            {
+                if (connection != null && connection.IsOpened)
+                {
+                    connection.Close();
+                }
+            }
+            catch
+            {
+                // Ignorar erros ao fechar conexão corrompida
+            }
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Verifica se uma conexão está válida e aberta
+    /// </summary>
+    private bool IsConnectionValid(ITikConnection? connection)
+    {
+        try
+        {
+            return connection != null && connection.IsOpened;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Fecha uma conexão de forma segura, tratando exceções
+    /// </summary>
+    private void SafeCloseConnection(ITikConnection? connection)
+    {
+        if (connection == null)
+            return;
+
+        try
+        {
+            if (connection.IsOpened)
+            {
+                connection.Close();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Erro ao fechar conexão RouterOS (pode estar já fechada)");
+        }
     }
 
     /// <summary>
     /// Executa uma operação com retry e timeout
+    /// Cada tentativa cria uma nova conexão para evitar reutilização de conexões corrompidas
     /// </summary>
     private async Task<T> ExecuteWithRetryAsync<T>(
         Func<T> operation,
@@ -82,6 +147,7 @@ public class RouterOsClient : IRouterOsClient
                 _logger?.LogDebug("Executando {Operation} (tentativa {Attempt}/{MaxAttempts})", 
                     operationName, attempt, MaxRetryAttempts);
 
+                // Cada tentativa executa a operação completa (que cria uma nova conexão)
                 var task = Task.Run(operation, cancellationToken);
                 var result = await task.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
                 
@@ -104,6 +170,13 @@ public class RouterOsClient : IRouterOsClient
                 _logger?.LogWarning(ex, "⏱️ Timeout na operação {Operation} (tentativa {Attempt}/{MaxAttempts}, timeout: {Timeout}s)", 
                     operationName, attempt, MaxRetryAttempts, timeoutSeconds);
             }
+            catch (tik4net.TikConnectionException ex)
+            {
+                // Erro específico de conexão - precisa de mais tempo para reconectar
+                lastException = ex;
+                _logger?.LogWarning(ex, "🔌 Erro de conexão RouterOS na operação {Operation} (tentativa {Attempt}/{MaxAttempts}): {Error}", 
+                    operationName, attempt, MaxRetryAttempts, ex.Message);
+            }
             catch (Exception ex)
             {
                 lastException = ex;
@@ -112,10 +185,15 @@ public class RouterOsClient : IRouterOsClient
             }
 
             // Aguardar antes de tentar novamente (backoff exponencial)
+            // Para erros de conexão, aguardar um pouco mais para dar tempo ao router se recuperar
             if (attempt < MaxRetryAttempts)
             {
-                var delayMs = BaseRetryDelayMs * (int)Math.Pow(2, attempt - 1);
-                _logger?.LogDebug("Aguardando {DelayMs}ms antes da próxima tentativa...", delayMs);
+                var baseDelay = lastException is tik4net.TikConnectionException 
+                    ? BaseRetryDelayMs * 2  // Delay maior para erros de conexão
+                    : BaseRetryDelayMs;
+                    
+                var delayMs = baseDelay * (int)Math.Pow(2, attempt - 1);
+                _logger?.LogDebug("Aguardando {DelayMs}ms antes da próxima tentativa (router pode estar se recuperando)...", delayMs);
                 await Task.Delay(delayMs, cancellationToken);
             }
         }
@@ -142,6 +220,17 @@ public class RouterOsClient : IRouterOsClient
         }, operationName, timeoutSeconds, cancellationToken);
     }
 
+    /// <summary>
+    /// Obtém um campo de resposta de forma segura, retornando null se o campo não existir
+    /// </summary>
+    private static string? GetResponseFieldSafe(ITikReSentence sentence, string fieldName)
+    {
+        if (sentence == null || sentence.Words == null)
+            return null;
+
+        return sentence.Words.TryGetValue(fieldName, out var value) ? value : null;
+    }
+
     public async Task<bool> TestConnectionAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default)
     {
         const int timeoutSeconds = 5;
@@ -166,9 +255,10 @@ public class RouterOsClient : IRouterOsClient
             // Executar em thread separada para não travar a API
             return await Task.Run(async () =>
             {
+                ITikConnection? connection = null;
                 try
                 {
-                    using var connection = CreateConnection(apiUrl, username, password);
+                    connection = CreateConnection(apiUrl, username, password);
                     
                     // Testar conexão executando um comando simples
                     var cmd = connection.CreateCommand("/system/identity/print");
@@ -181,6 +271,10 @@ public class RouterOsClient : IRouterOsClient
                 {
                     _logger?.LogWarning(ex, "❌ Falha ao conectar RouterOS {Host}:{Port}: {Error}", host, port, ex.Message);
                     return false;
+                }
+                finally
+                {
+                    SafeCloseConnection(connection);
                 }
             }, cancellationToken).WaitAsync(TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
         }
@@ -204,28 +298,37 @@ public class RouterOsClient : IRouterOsClient
 
             return await ExecuteWithRetryAsync(() =>
             {
-                using var connection = CreateConnection(apiUrl, username, password);
-                
-                var systemInfo = new RouterOsSystemInfo();
-                
-                // Buscar informações do sistema
-                var resourceCmd = connection.CreateCommand("/system/resource/print");
-                var resource = resourceCmd.ExecuteList().FirstOrDefault();
-                
-                if (resource != null)
+                ITikConnection? connection = null;
+                try
                 {
-                    systemInfo.BoardName = resource.GetResponseField("board-name");
-                    systemInfo.Model = resource.GetResponseField("board-name") ?? resource.GetResponseField("platform");
-                    systemInfo.SerialNumber = resource.GetResponseField("serial-number");
-                    systemInfo.FirmwareVersion = resource.GetResponseField("version");
-                    systemInfo.CpuLoad = resource.GetResponseField("cpu-load");
-                    systemInfo.MemoryUsage = resource.GetResponseField("free-memory");
-                    systemInfo.TotalMemory = resource.GetResponseField("total-memory");
-                    systemInfo.Temperature = resource.GetResponseField("temperature");
-                    systemInfo.Uptime = resource.GetResponseField("uptime");
+                    connection = CreateConnection(apiUrl, username, password);
+                    
+                    var systemInfo = new RouterOsSystemInfo();
+                    
+                    // Buscar informações do sistema
+                    var resourceCmd = connection.CreateCommand("/system/resource/print");
+                    var resource = resourceCmd.ExecuteList().FirstOrDefault();
+                    
+                    if (resource != null)
+                    {
+                        // Usar GetResponseFieldSafe para campos opcionais que podem não existir
+                        systemInfo.BoardName = GetResponseFieldSafe(resource, "board-name");
+                        systemInfo.Model = GetResponseFieldSafe(resource, "board-name") ?? GetResponseFieldSafe(resource, "platform");
+                        systemInfo.SerialNumber = GetResponseFieldSafe(resource, "serial-number");
+                        systemInfo.FirmwareVersion = GetResponseFieldSafe(resource, "version");
+                        systemInfo.CpuLoad = GetResponseFieldSafe(resource, "cpu-load");
+                        systemInfo.MemoryUsage = GetResponseFieldSafe(resource, "free-memory");
+                        systemInfo.TotalMemory = GetResponseFieldSafe(resource, "total-memory");
+                        systemInfo.Temperature = GetResponseFieldSafe(resource, "temperature");
+                        systemInfo.Uptime = GetResponseFieldSafe(resource, "uptime");
+                    }
+                    
+                    return systemInfo;
                 }
-                
-                return systemInfo;
+                finally
+                {
+                    SafeCloseConnection(connection);
+                }
             }, $"GetSystemInfoAsync({apiUrl})", DefaultTimeoutSeconds, cancellationToken);
         }
         catch (Exception ex)
@@ -239,13 +342,21 @@ public class RouterOsClient : IRouterOsClient
     {
         return await ExecuteWithRetryAsync(() =>
         {
-            using var connection = CreateConnection(apiUrl, username, password);
-            
-            var cmd = connection.CreateCommand("/export");
-            var result = cmd.ExecuteList();
-            
-            // O export retorna o conteúdo da configuração
-            return string.Join("\n", result.Select(r => r.ToString()));
+            ITikConnection? connection = null;
+            try
+            {
+                connection = CreateConnection(apiUrl, username, password);
+                
+                var cmd = connection.CreateCommand("/export");
+                var result = cmd.ExecuteList();
+                
+                // O export retorna o conteúdo da configuração
+                return string.Join("\n", result.Select(r => r.ToString()));
+            }
+            finally
+            {
+                SafeCloseConnection(connection);
+            }
         }, $"ExportConfigAsync({apiUrl})", DefaultTimeoutSeconds, cancellationToken);
     }
 
@@ -253,26 +364,34 @@ public class RouterOsClient : IRouterOsClient
     {
         await ExecuteWithRetryAsync(() =>
         {
-            using var connection = CreateConnection(apiUrl, username, password);
-            
-            // Dividir configuração em linhas e executar cada comando
-            var lines = configContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var line in lines)
+            ITikConnection? connection = null;
+            try
             {
-                var trimmedLine = line.Trim();
-                if (string.IsNullOrWhiteSpace(trimmedLine) || trimmedLine.StartsWith("#"))
-                    continue;
+                connection = CreateConnection(apiUrl, username, password);
                 
-                try
+                // Dividir configuração em linhas e executar cada comando
+                var lines = configContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                foreach (var line in lines)
                 {
-                    var cmd = connection.CreateCommand(trimmedLine);
-                    cmd.ExecuteNonQuery();
+                    var trimmedLine = line.Trim();
+                    if (string.IsNullOrWhiteSpace(trimmedLine) || trimmedLine.StartsWith("#"))
+                        continue;
+                    
+                    try
+                    {
+                        var cmd = connection.CreateCommand(trimmedLine);
+                        cmd.ExecuteNonQuery();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex, "Erro ao executar linha de configuração: {Line}", trimmedLine);
+                        // Continuar com as próximas linhas
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger?.LogWarning(ex, "Erro ao executar linha de configuração: {Line}", trimmedLine);
-                    // Continuar com as próximas linhas
-                }
+            }
+            finally
+            {
+                SafeCloseConnection(connection);
             }
         }, $"ImportConfigAsync({apiUrl})", DefaultTimeoutSeconds, cancellationToken);
     }
@@ -283,37 +402,45 @@ public class RouterOsClient : IRouterOsClient
         {
             return await ExecuteWithRetryAsync(() =>
             {
-                using var connection = CreateConnection(apiUrl, username, password);
-                
-                var logs = new List<RouterOsLog>();
-                var cmd = connection.CreateCommand("/log/print");
-                
-                if (since.HasValue)
+                ITikConnection? connection = null;
+                try
                 {
-                    cmd.AddParameter("?since", since.Value.ToString("yyyy-MM-dd HH:mm:ss"));
-                }
-                
-                var logEntries = cmd.ExecuteList();
-                
-                foreach (var entry in logEntries)
-                {
-                    var log = new RouterOsLog
-                    {
-                        Topic = entry.GetResponseField("topics"),
-                        Action = entry.GetResponseField("action"),
-                        Message = entry.GetResponseField("message"),
-                        User = entry.GetResponseField("user")
-                    };
+                    connection = CreateConnection(apiUrl, username, password);
                     
-                    if (DateTime.TryParse(entry.GetResponseField("time"), out var timestamp))
+                    var logs = new List<RouterOsLog>();
+                    var cmd = connection.CreateCommand("/log/print");
+                    
+                    if (since.HasValue)
                     {
-                        log.Timestamp = timestamp;
+                        cmd.AddParameter("?since", since.Value.ToString("yyyy-MM-dd HH:mm:ss"));
                     }
                     
-                    logs.Add(log);
+                    var logEntries = cmd.ExecuteList();
+                    
+                    foreach (var entry in logEntries)
+                    {
+                        var log = new RouterOsLog
+                        {
+                            Topic = GetResponseFieldSafe(entry, "topics"),
+                            Action = GetResponseFieldSafe(entry, "action"),
+                            Message = GetResponseFieldSafe(entry, "message"),
+                            User = GetResponseFieldSafe(entry, "user")
+                        };
+                        
+                        if (DateTime.TryParse(GetResponseFieldSafe(entry, "time") ?? "", out var timestamp))
+                        {
+                            log.Timestamp = timestamp;
+                        }
+                        
+                        logs.Add(log);
+                    }
+                    
+                    return logs;
                 }
-                
-                return logs;
+                finally
+                {
+                    SafeCloseConnection(connection);
+                }
             }, $"GetConfigLogsAsync({apiUrl})", DefaultTimeoutSeconds, cancellationToken);
         }
         catch (Exception ex)
@@ -329,15 +456,23 @@ public class RouterOsClient : IRouterOsClient
 
         await ExecuteWithRetryAsync(() =>
         {
-            using var connection = CreateConnection(apiUrl, username, password);
-            
-            var cmd = connection.CreateCommand("/user/add");
-            cmd.AddParameter("name", newUsername);
-            cmd.AddParameter("password", newPassword);
-            cmd.AddParameter("group", "full");
-            cmd.ExecuteNonQuery();
-            
-            _logger?.LogInformation("✅ Usuário {NewUsername} criado com sucesso no RouterOS", newUsername);
+            ITikConnection? connection = null;
+            try
+            {
+                connection = CreateConnection(apiUrl, username, password);
+                
+                var cmd = connection.CreateCommand("/user/add");
+                cmd.AddParameter("name", newUsername);
+                cmd.AddParameter("password", newPassword);
+                cmd.AddParameter("group", "full");
+                cmd.ExecuteNonQuery();
+                
+                _logger?.LogInformation("✅ Usuário {NewUsername} criado com sucesso no RouterOS", newUsername);
+            }
+            finally
+            {
+                SafeCloseConnection(connection);
+            }
         }, $"CreateUserAsync({apiUrl}, {newUsername})", DefaultTimeoutSeconds, cancellationToken);
     }
 
@@ -347,25 +482,33 @@ public class RouterOsClient : IRouterOsClient
 
         return await ExecuteWithRetryAsync(() =>
         {
-            using var connection = CreateConnection(apiUrl, username, password);
-            
-            var cmd = connection.CreateCommand(command);
-            var results = cmd.ExecuteList();
-            
-            var resultList = new List<Dictionary<string, string>>();
-            
-            foreach (var result in results)
+            ITikConnection? connection = null;
+            try
             {
-                var dict = new Dictionary<string, string>();
-                // Words é um IDictionary<string, string> que contém todos os atributos
-                foreach (var kvp in result.Words)
+                connection = CreateConnection(apiUrl, username, password);
+                
+                var cmd = connection.CreateCommand(command);
+                var results = cmd.ExecuteList();
+                
+                var resultList = new List<Dictionary<string, string>>();
+                
+                foreach (var result in results)
                 {
-                    dict[kvp.Key] = kvp.Value ?? string.Empty;
+                    var dict = new Dictionary<string, string>();
+                    // Words é um IDictionary<string, string> que contém todos os atributos
+                    foreach (var kvp in result.Words)
+                    {
+                        dict[kvp.Key] = kvp.Value ?? string.Empty;
+                    }
+                    resultList.Add(dict);
                 }
-                resultList.Add(dict);
+                
+                return resultList;
             }
-            
-            return resultList;
+            finally
+            {
+                SafeCloseConnection(connection);
+            }
         }, $"ExecuteCommandAsync({apiUrl}, {command})", DefaultTimeoutSeconds, cancellationToken);
     }
 
@@ -375,10 +518,18 @@ public class RouterOsClient : IRouterOsClient
 
         await ExecuteWithRetryAsync(() =>
         {
-            using var connection = CreateConnection(apiUrl, username, password);
-            
-            var cmd = connection.CreateCommand(command);
-            cmd.ExecuteNonQuery();
+            ITikConnection? connection = null;
+            try
+            {
+                connection = CreateConnection(apiUrl, username, password);
+                
+                var cmd = connection.CreateCommand(command);
+                cmd.ExecuteNonQuery();
+            }
+            finally
+            {
+                SafeCloseConnection(connection);
+            }
         }, $"ExecuteCommandNoResultAsync({apiUrl}, {command})", DefaultTimeoutSeconds, cancellationToken);
     }
 }

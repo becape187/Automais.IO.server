@@ -98,12 +98,12 @@ try
     {
         SslMode = SslMode.Require,
         TrustServerCertificate = true,
-        CommandTimeout = 60, // Timeout para comandos SQL (60 segundos)
-        Timeout = 30, // Timeout para estabelecer conexão (30 segundos)
-        ConnectionIdleLifetime = 300, // Fechar conexões idle após 5 minutos
-        ConnectionPruningInterval = 10, // Verificar conexões idle a cada 10 segundos
-        MaxPoolSize = 100, // Máximo de conexões no pool
-        MinPoolSize = 5 // Mínimo de conexões no pool
+        CommandTimeout = 30, // Timeout para comandos SQL (30 segundos - reduzido de 60)
+        Timeout = 15, // Timeout para estabelecer conexão (15 segundos - reduzido de 30)
+        ConnectionIdleLifetime = 180, // Fechar conexões idle após 3 minutos (reduzido de 5)
+        ConnectionPruningInterval = 5, // Verificar conexões idle a cada 5 segundos (reduzido de 10)
+        MaxPoolSize = 50, // Máximo de conexões no pool (reduzido de 100 para evitar esgotamento)
+        MinPoolSize = 2 // Mínimo de conexões no pool (reduzido de 5)
     };
 
     // Validar se o Host foi configurado
@@ -317,6 +317,13 @@ builder.Services.AddControllers()
         options.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
     });
 
+// Configurar Kestrel com timeouts (evita requisições travadas)
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(2);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(30);
+});
+
 // Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -449,8 +456,63 @@ logger.LogInformation("🔍 Teste de conexão concluído.");
 
 // ===== Configuração do Pipeline HTTP =====
 
+// Middleware de logging de requisições (para debug)
+app.Use(async (context, next) =>
+{
+    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    var startTime = DateTime.UtcNow;
+    
+    try
+    {
+        await next();
+        var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        
+        if (context.Response.StatusCode >= 500)
+        {
+            logger.LogWarning("⚠️ Requisição {Method} {Path} retornou {StatusCode} em {Duration}ms", 
+                context.Request.Method, context.Request.Path, context.Response.StatusCode, duration);
+        }
+        else if (duration > 5000) // Logar requisições lentas (>5s)
+        {
+            logger.LogWarning("🐌 Requisição lenta: {Method} {Path} levou {Duration}ms", 
+                context.Request.Method, context.Request.Path, duration);
+        }
+    }
+    catch (Exception ex)
+    {
+        var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        logger.LogError(ex, "❌ Erro não tratado na requisição {Method} {Path} após {Duration}ms: {Error}", 
+            context.Request.Method, context.Request.Path, duration, ex.Message);
+        throw;
+    }
+});
+
 // Tratamento global de erros (deve vir primeiro)
-app.UseExceptionHandler("/error");
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        var exception = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;
+        
+        logger.LogError(exception, "❌ Erro não tratado: {Error} | Path: {Path} | Method: {Method}", 
+            exception?.Message, context.Request.Path, context.Request.Method);
+        
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+        
+        var response = new
+        {
+            message = "Erro interno do servidor",
+            detail = app.Environment.IsDevelopment() ? exception?.ToString() : null,
+            path = context.Request.Path,
+            method = context.Request.Method,
+            timestamp = DateTime.UtcNow
+        };
+        
+        await context.Response.WriteAsJsonAsync(response);
+    });
+});
 
 // Swagger sempre habilitado
 app.UseSwagger();
@@ -468,27 +530,68 @@ app.MapControllers();
 // SignalR Hub
 app.MapHub<Automais.Core.Hubs.RouterStatusHub>("/hubs/router-status");
 
-// Endpoint de tratamento de erros
-app.Map("/error", (HttpContext context) =>
-{
-    var exception = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;
-    var response = new
-    {
-        message = exception?.Message ?? "Erro interno do servidor",
-        detail = app.Environment.IsDevelopment() ? exception?.ToString() : null
-    };
-    return Results.Json(response, statusCode: 500);
-});
+// Endpoint de tratamento de erros (mantido para compatibilidade, mas o middleware acima já trata)
 
-// Health check
-app.MapGet("/health", () => Results.Ok(new 
+// Health check robusto
+app.MapGet("/health", async (ApplicationDbContext dbContext, ILogger<Program> healthLogger) =>
 {
-    status = "healthy",
-    mode = "database",
-    database = "postgresql (DigitalOcean)",
-    chirpstack = chirpStackUrl,
-    timestamp = DateTime.UtcNow
-}));
+    var healthStatus = new
+    {
+        status = "healthy",
+        mode = "database",
+        database = "postgresql (DigitalOcean)",
+        chirpstack = chirpStackUrl,
+        timestamp = DateTime.UtcNow,
+        checks = new Dictionary<string, object>()
+    };
+    
+    // Testar conexão com banco de dados
+    try
+    {
+        var canConnect = await dbContext.Database.CanConnectAsync();
+        healthStatus.checks["database"] = new
+        {
+            status = canConnect ? "healthy" : "unhealthy",
+            connected = canConnect
+        };
+        
+        if (!canConnect)
+        {
+            healthLogger.LogWarning("⚠️ Health check: Banco de dados não está acessível");
+            return Results.Json(new
+            {
+                status = "unhealthy",
+                checks = healthStatus.checks,
+                timestamp = DateTime.UtcNow
+            }, statusCode: 503);
+        }
+        
+        // Testar query simples
+        var testQuery = await dbContext.Database.ExecuteSqlRawAsync("SELECT 1");
+        healthStatus.checks["database_query"] = new
+        {
+            status = "healthy",
+            query_executed = true
+        };
+    }
+    catch (Exception ex)
+    {
+        healthLogger.LogError(ex, "❌ Health check falhou: {Error}", ex.Message);
+        healthStatus.checks["database"] = new
+        {
+            status = "unhealthy",
+            error = ex.Message
+        };
+        return Results.Json(new
+        {
+            status = "unhealthy",
+            checks = healthStatus.checks,
+            timestamp = DateTime.UtcNow
+        }, statusCode: 503);
+    }
+    
+    return Results.Ok(healthStatus);
+});
 
 Console.WriteLine("\n🚀 API rodando!");
 Console.WriteLine($"📝 Swagger: http://localhost:5000/swagger ou https://localhost:5001/swagger");

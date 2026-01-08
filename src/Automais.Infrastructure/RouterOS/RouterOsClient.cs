@@ -12,6 +12,9 @@ namespace Automais.Infrastructure.RouterOS;
 public class RouterOsClient : IRouterOsClient
 {
     private readonly ILogger<RouterOsClient>? _logger;
+    private const int DefaultTimeoutSeconds = 30;
+    private const int MaxRetryAttempts = 3;
+    private const int BaseRetryDelayMs = 500;
 
     public RouterOsClient(ILogger<RouterOsClient>? logger = null)
     {
@@ -59,6 +62,84 @@ public class RouterOsClient : IRouterOsClient
         var hostWithPort = port == 8728 ? host : $"{host}:{port}";
         connection.Open(hostWithPort, username, password);
         return connection;
+    }
+
+    /// <summary>
+    /// Executa uma operação com retry e timeout
+    /// </summary>
+    private async Task<T> ExecuteWithRetryAsync<T>(
+        Func<T> operation,
+        string operationName,
+        int timeoutSeconds = DefaultTimeoutSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        Exception? lastException = null;
+        
+        for (int attempt = 1; attempt <= MaxRetryAttempts; attempt++)
+        {
+            try
+            {
+                _logger?.LogDebug("Executando {Operation} (tentativa {Attempt}/{MaxAttempts})", 
+                    operationName, attempt, MaxRetryAttempts);
+
+                var task = Task.Run(operation, cancellationToken);
+                var result = await task.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
+                
+                if (attempt > 1)
+                {
+                    _logger?.LogInformation("✅ {Operation} bem-sucedida na tentativa {Attempt}", 
+                        operationName, attempt);
+                }
+                
+                return result;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger?.LogWarning("Operação {Operation} cancelada", operationName);
+                throw;
+            }
+            catch (TimeoutException ex)
+            {
+                lastException = ex;
+                _logger?.LogWarning(ex, "⏱️ Timeout na operação {Operation} (tentativa {Attempt}/{MaxAttempts}, timeout: {Timeout}s)", 
+                    operationName, attempt, MaxRetryAttempts, timeoutSeconds);
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                _logger?.LogWarning(ex, "❌ Erro na operação {Operation} (tentativa {Attempt}/{MaxAttempts}): {Error}", 
+                    operationName, attempt, MaxRetryAttempts, ex.Message);
+            }
+
+            // Aguardar antes de tentar novamente (backoff exponencial)
+            if (attempt < MaxRetryAttempts)
+            {
+                var delayMs = BaseRetryDelayMs * (int)Math.Pow(2, attempt - 1);
+                _logger?.LogDebug("Aguardando {DelayMs}ms antes da próxima tentativa...", delayMs);
+                await Task.Delay(delayMs, cancellationToken);
+            }
+        }
+
+        _logger?.LogError(lastException, "❌ Falha definitiva na operação {Operation} após {MaxAttempts} tentativas", 
+            operationName, MaxRetryAttempts);
+        throw new InvalidOperationException(
+            $"Falha ao executar {operationName} após {MaxRetryAttempts} tentativas", lastException);
+    }
+
+    /// <summary>
+    /// Executa uma operação sem retorno com retry e timeout
+    /// </summary>
+    private async Task ExecuteWithRetryAsync(
+        Action operation,
+        string operationName,
+        int timeoutSeconds = DefaultTimeoutSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        await ExecuteWithRetryAsync<object?>(() =>
+        {
+            operation();
+            return null;
+        }, operationName, timeoutSeconds, cancellationToken);
     }
 
     public async Task<bool> TestConnectionAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default)
@@ -121,7 +202,7 @@ public class RouterOsClient : IRouterOsClient
         {
             _logger?.LogInformation("Buscando informações do sistema RouterOS via {ApiUrl}", apiUrl);
 
-            return await Task.Run(() =>
+            return await ExecuteWithRetryAsync(() =>
             {
                 using var connection = CreateConnection(apiUrl, username, password);
                 
@@ -142,7 +223,7 @@ public class RouterOsClient : IRouterOsClient
                 }
                 
                 return systemInfo;
-            }, cancellationToken);
+            }, $"GetSystemInfoAsync({apiUrl})", DefaultTimeoutSeconds, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -153,67 +234,51 @@ public class RouterOsClient : IRouterOsClient
 
     public async Task<string> ExportConfigAsync(string apiUrl, string username, string password, CancellationToken cancellationToken = default)
     {
-        try
+        return await ExecuteWithRetryAsync(() =>
         {
-            return await Task.Run(() =>
-            {
-                using var connection = CreateConnection(apiUrl, username, password);
-                
-                var cmd = connection.CreateCommand("/export");
-                var result = cmd.ExecuteList();
-                
-                // O export retorna o conteúdo da configuração
-                return string.Join("\n", result.Select(r => r.ToString()));
-            }, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "Erro ao exportar configuração RouterOS");
-            throw;
-        }
+            using var connection = CreateConnection(apiUrl, username, password);
+            
+            var cmd = connection.CreateCommand("/export");
+            var result = cmd.ExecuteList();
+            
+            // O export retorna o conteúdo da configuração
+            return string.Join("\n", result.Select(r => r.ToString()));
+        }, $"ExportConfigAsync({apiUrl})", DefaultTimeoutSeconds, cancellationToken);
     }
 
     public async Task ImportConfigAsync(string apiUrl, string username, string password, string configContent, CancellationToken cancellationToken = default)
     {
-        try
+        await ExecuteWithRetryAsync(() =>
         {
-            await Task.Run(() =>
+            using var connection = CreateConnection(apiUrl, username, password);
+            
+            // Dividir configuração em linhas e executar cada comando
+            var lines = configContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines)
             {
-                using var connection = CreateConnection(apiUrl, username, password);
+                var trimmedLine = line.Trim();
+                if (string.IsNullOrWhiteSpace(trimmedLine) || trimmedLine.StartsWith("#"))
+                    continue;
                 
-                // Dividir configuração em linhas e executar cada comando
-                var lines = configContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                foreach (var line in lines)
+                try
                 {
-                    var trimmedLine = line.Trim();
-                    if (string.IsNullOrWhiteSpace(trimmedLine) || trimmedLine.StartsWith("#"))
-                        continue;
-                    
-                    try
-                    {
-                        var cmd = connection.CreateCommand(trimmedLine);
-                        cmd.ExecuteNonQuery();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger?.LogWarning(ex, "Erro ao executar linha de configuração: {Line}", trimmedLine);
-                        // Continuar com as próximas linhas
-                    }
+                    var cmd = connection.CreateCommand(trimmedLine);
+                    cmd.ExecuteNonQuery();
                 }
-            }, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "Erro ao importar configuração RouterOS");
-            throw;
-        }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "Erro ao executar linha de configuração: {Line}", trimmedLine);
+                    // Continuar com as próximas linhas
+                }
+            }
+        }, $"ImportConfigAsync({apiUrl})", DefaultTimeoutSeconds, cancellationToken);
     }
 
     public async Task<List<RouterOsLog>> GetConfigLogsAsync(string apiUrl, string username, string password, DateTime? since = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            return await Task.Run(() =>
+            return await ExecuteWithRetryAsync(() =>
             {
                 using var connection = CreateConnection(apiUrl, username, password);
                 
@@ -246,7 +311,7 @@ public class RouterOsClient : IRouterOsClient
                 }
                 
                 return logs;
-            }, cancellationToken);
+            }, $"GetConfigLogsAsync({apiUrl})", DefaultTimeoutSeconds, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -257,84 +322,60 @@ public class RouterOsClient : IRouterOsClient
 
     public async Task CreateUserAsync(string apiUrl, string username, string password, string newUsername, string newPassword, CancellationToken cancellationToken = default)
     {
-        try
-        {
-            _logger?.LogInformation("Criando usuário {NewUsername} no RouterOS via {ApiUrl}", newUsername, apiUrl);
+        _logger?.LogInformation("Criando usuário {NewUsername} no RouterOS via {ApiUrl}", newUsername, apiUrl);
 
-            await Task.Run(() =>
-            {
-                using var connection = CreateConnection(apiUrl, username, password);
-                
-                var cmd = connection.CreateCommand("/user/add");
-                cmd.AddParameter("name", newUsername);
-                cmd.AddParameter("password", newPassword);
-                cmd.AddParameter("group", "full");
-                cmd.ExecuteNonQuery();
-                
-                _logger?.LogInformation("✅ Usuário {NewUsername} criado com sucesso no RouterOS", newUsername);
-            }, cancellationToken);
-        }
-        catch (Exception ex)
+        await ExecuteWithRetryAsync(() =>
         {
-            _logger?.LogError(ex, "Erro ao criar usuário {NewUsername} no RouterOS", newUsername);
-            throw;
-        }
+            using var connection = CreateConnection(apiUrl, username, password);
+            
+            var cmd = connection.CreateCommand("/user/add");
+            cmd.AddParameter("name", newUsername);
+            cmd.AddParameter("password", newPassword);
+            cmd.AddParameter("group", "full");
+            cmd.ExecuteNonQuery();
+            
+            _logger?.LogInformation("✅ Usuário {NewUsername} criado com sucesso no RouterOS", newUsername);
+        }, $"CreateUserAsync({apiUrl}, {newUsername})", DefaultTimeoutSeconds, cancellationToken);
     }
 
     public async Task<List<Dictionary<string, string>>> ExecuteCommandAsync(string apiUrl, string username, string password, string command, CancellationToken cancellationToken = default)
     {
-        try
-        {
-            _logger?.LogDebug("Executando comando RouterOS: {Command}", command);
+        _logger?.LogDebug("Executando comando RouterOS: {Command}", command);
 
-            return await Task.Run(() =>
-            {
-                using var connection = CreateConnection(apiUrl, username, password);
-                
-                var cmd = connection.CreateCommand(command);
-                var results = cmd.ExecuteList();
-                
-                var resultList = new List<Dictionary<string, string>>();
-                
-                foreach (var result in results)
-                {
-                    var dict = new Dictionary<string, string>();
-                    // Words é um IDictionary<string, string> que contém todos os atributos
-                    foreach (var kvp in result.Words)
-                    {
-                        dict[kvp.Key] = kvp.Value ?? string.Empty;
-                    }
-                    resultList.Add(dict);
-                }
-                
-                return resultList;
-            }, cancellationToken);
-        }
-        catch (Exception ex)
+        return await ExecuteWithRetryAsync(() =>
         {
-            _logger?.LogError(ex, "Erro ao executar comando RouterOS: {Command}", command);
-            throw;
-        }
+            using var connection = CreateConnection(apiUrl, username, password);
+            
+            var cmd = connection.CreateCommand(command);
+            var results = cmd.ExecuteList();
+            
+            var resultList = new List<Dictionary<string, string>>();
+            
+            foreach (var result in results)
+            {
+                var dict = new Dictionary<string, string>();
+                // Words é um IDictionary<string, string> que contém todos os atributos
+                foreach (var kvp in result.Words)
+                {
+                    dict[kvp.Key] = kvp.Value ?? string.Empty;
+                }
+                resultList.Add(dict);
+            }
+            
+            return resultList;
+        }, $"ExecuteCommandAsync({apiUrl}, {command})", DefaultTimeoutSeconds, cancellationToken);
     }
 
     public async Task ExecuteCommandNoResultAsync(string apiUrl, string username, string password, string command, CancellationToken cancellationToken = default)
     {
-        try
-        {
-            _logger?.LogDebug("Executando comando RouterOS (sem resultado): {Command}", command);
+        _logger?.LogDebug("Executando comando RouterOS (sem resultado): {Command}", command);
 
-            await Task.Run(() =>
-            {
-                using var connection = CreateConnection(apiUrl, username, password);
-                
-                var cmd = connection.CreateCommand(command);
-                cmd.ExecuteNonQuery();
-            }, cancellationToken);
-        }
-        catch (Exception ex)
+        await ExecuteWithRetryAsync(() =>
         {
-            _logger?.LogError(ex, "Erro ao executar comando RouterOS: {Command}", command);
-            throw;
-        }
+            using var connection = CreateConnection(apiUrl, username, password);
+            
+            var cmd = connection.CreateCommand(command);
+            cmd.ExecuteNonQuery();
+        }, $"ExecuteCommandNoResultAsync({apiUrl}, {command})", DefaultTimeoutSeconds, cancellationToken);
     }
 }

@@ -1,6 +1,7 @@
 using Automais.Core.DTOs;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
+using System.Text.Json;
 
 namespace Automais.Core.Services;
 
@@ -334,6 +335,51 @@ public class RouterService : IRouterService
             UpdatedAt = router.UpdatedAt,
             AllowedNetworks = allowedNetworks
         };
+    }
+
+    public async Task<RouterDto> UpdateSystemInfoAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var router = await _routerRepository.GetByIdAsync(id, cancellationToken);
+        if (router == null)
+        {
+            throw new KeyNotFoundException($"Router com ID {id} não encontrado");
+        }
+
+        // Verificar se tem credenciais
+        if (string.IsNullOrWhiteSpace(router.RouterOsApiUrl) ||
+            string.IsNullOrWhiteSpace(router.RouterOsApiUsername) ||
+            string.IsNullOrWhiteSpace(router.RouterOsApiPassword))
+        {
+            throw new InvalidOperationException("Credenciais da API RouterOS não configuradas");
+        }
+
+        // Buscar informações do sistema
+        var systemInfo = await _routerOsClient.GetSystemInfoAsync(
+            router.RouterOsApiUrl,
+            router.RouterOsApiUsername,
+            router.RouterOsApiPassword,
+            cancellationToken);
+
+        // Atualizar informações (sempre atualizar, mesmo se já existirem)
+        router.Model = systemInfo.Model;
+        router.SerialNumber = systemInfo.SerialNumber;
+        router.FirmwareVersion = systemInfo.FirmwareVersion;
+        
+        // Atualizar HardwareInfo com informações adicionais (JSON)
+        var hardwareInfo = new
+        {
+            cpuLoad = systemInfo.CpuLoad,
+            memoryUsage = systemInfo.MemoryUsage,
+            uptime = systemInfo.Uptime,
+            temperature = systemInfo.Temperature,
+            lastUpdated = DateTime.UtcNow
+        };
+        router.HardwareInfo = JsonSerializer.Serialize(hardwareInfo);
+        
+        router.UpdatedAt = DateTime.UtcNow;
+
+        var updated = await _routerRepository.UpdateAsync(router, cancellationToken);
+        return await MapToDtoAsync(updated, cancellationToken);
     }
 }
 

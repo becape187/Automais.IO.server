@@ -13,5 +13,6 @@ public interface IRouterService
     Task<RouterDto> UpdateAsync(Guid id, UpdateRouterDto dto, CancellationToken cancellationToken = default);
     Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
     Task<RouterDto> TestConnectionAsync(Guid id, CancellationToken cancellationToken = default);
+    Task<RouterDto> UpdateSystemInfoAsync(Guid id, CancellationToken cancellationToken = default);
 }
 

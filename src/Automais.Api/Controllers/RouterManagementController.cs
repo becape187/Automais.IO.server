@@ -2,6 +2,7 @@ using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace Automais.Api.Controllers;
 
@@ -126,13 +127,65 @@ public class RouterManagementController : ControllerBase
 
             _logger.LogInformation("Resultado do teste de conexão para router {RouterId}: {IsConnected}", routerId, isConnected);
 
+            // Se conectou, atualizar informações do sistema automaticamente
+            if (isConnected)
+            {
+                try
+                {
+                    var systemInfo = await _routerOsClient.GetSystemInfoAsync(
+                        apiUrl,
+                        router.RouterOsApiUsername,
+                        router.RouterOsApiPassword,
+                        cancellationToken);
+
+                    // Atualizar informações no banco
+                    router.Model = systemInfo.Model ?? router.Model;
+                    router.SerialNumber = systemInfo.SerialNumber ?? router.SerialNumber;
+                    router.FirmwareVersion = systemInfo.FirmwareVersion ?? router.FirmwareVersion;
+                    
+                    // Atualizar HardwareInfo com informações adicionais
+                    var hardwareInfo = new
+                    {
+                        cpuLoad = systemInfo.CpuLoad,
+                        memoryUsage = systemInfo.MemoryUsage,
+                        uptime = systemInfo.Uptime,
+                        temperature = systemInfo.Temperature,
+                        lastUpdated = DateTime.UtcNow
+                    };
+                    router.HardwareInfo = JsonSerializer.Serialize(hardwareInfo);
+                    
+                    router.LastSeenAt = DateTime.UtcNow;
+                    router.UpdatedAt = DateTime.UtcNow;
+                    router.Status = Core.Entities.RouterStatus.Online;
+
+                    await _routerRepository.UpdateAsync(router, cancellationToken);
+                    _logger.LogInformation("✅ Informações do sistema atualizadas para router {RouterId}", routerId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "⚠️ Erro ao atualizar informações do sistema para router {RouterId}: {Error}", routerId, ex.Message);
+                    // Não falhar o teste de conexão se a atualização falhar
+                }
+            }
+            else
+            {
+                // Se não conectou, atualizar status
+                router.Status = Core.Entities.RouterStatus.Offline;
+                router.UpdatedAt = DateTime.UtcNow;
+                await _routerRepository.UpdateAsync(router, cancellationToken);
+            }
+
             return Ok(new
             {
                 connected = isConnected,
                 routerId = router.Id,
                 routerName = router.Name,
-                apiUrl = apiUrl, // Usar a URL resolvida (pode ser do router ou do peer)
-                username = router.RouterOsApiUsername
+                apiUrl = apiUrl,
+                username = router.RouterOsApiUsername,
+                model = router.Model,
+                serialNumber = router.SerialNumber,
+                firmwareVersion = router.FirmwareVersion,
+                hardwareInfo = router.HardwareInfo != null ? JsonSerializer.Deserialize<object>(router.HardwareInfo) : null
             });
         }
         catch (Exception ex)
@@ -319,6 +372,76 @@ public class RouterManagementController : ControllerBase
         {
             _logger.LogError(ex, "Erro ao executar comando no router {RouterId}: {Command}", routerId, dto.Command);
             return StatusCode(500, new { message = "Erro ao executar comando", detail = ex.Message, command = dto.Command });
+        }
+    }
+
+    /// <summary>
+    /// Atualiza informações do sistema do router (Model, SerialNumber, FirmwareVersion, etc)
+    /// </summary>
+    [HttpPost("system-info/refresh")]
+    public async Task<ActionResult<object>> RefreshSystemInfo(Guid routerId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var routerData = await GetRouterWithCredentials(routerId, cancellationToken);
+            if (routerData == null) return NotFound(new { message = "Router não encontrado" });
+
+            var router = routerData.Value.router;
+            var apiUrl = routerData.Value.apiUrl;
+
+            _logger.LogInformation("Atualizando informações do sistema para router {RouterId}", routerId);
+
+            // Buscar informações do sistema
+            var systemInfo = await _routerOsClient.GetSystemInfoAsync(
+                apiUrl,
+                router.RouterOsApiUsername!,
+                router.RouterOsApiPassword!,
+                cancellationToken);
+
+            // Atualizar informações no banco
+            router.Model = systemInfo.Model ?? router.Model;
+            router.SerialNumber = systemInfo.SerialNumber ?? router.SerialNumber;
+            router.FirmwareVersion = systemInfo.FirmwareVersion ?? router.FirmwareVersion;
+            
+            // Atualizar HardwareInfo com informações adicionais
+            var hardwareInfo = new
+            {
+                cpuLoad = systemInfo.CpuLoad,
+                memoryUsage = systemInfo.MemoryUsage,
+                uptime = systemInfo.Uptime,
+                temperature = systemInfo.Temperature,
+                lastUpdated = DateTime.UtcNow
+            };
+            router.HardwareInfo = JsonSerializer.Serialize(hardwareInfo);
+            
+            router.LastSeenAt = DateTime.UtcNow;
+            router.UpdatedAt = DateTime.UtcNow;
+            router.Status = RouterStatus.Online;
+
+            await _routerRepository.UpdateAsync(router, cancellationToken);
+
+            _logger.LogInformation("✅ Informações do sistema atualizadas para router {RouterId}: Model={Model}, Serial={Serial}, Firmware={Firmware}", 
+                routerId, router.Model, router.SerialNumber, router.FirmwareVersion);
+
+            return Ok(new
+            {
+                success = true,
+                message = "Informações do sistema atualizadas com sucesso",
+                router = new
+                {
+                    id = router.Id,
+                    name = router.Name,
+                    model = router.Model,
+                    serialNumber = router.SerialNumber,
+                    firmwareVersion = router.FirmwareVersion,
+                    hardwareInfo = hardwareInfo
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao atualizar informações do sistema do router {RouterId}", routerId);
+            return StatusCode(500, new { message = "Erro ao atualizar informações do sistema", detail = ex.Message });
         }
     }
 

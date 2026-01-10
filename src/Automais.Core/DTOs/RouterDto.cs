@@ -15,7 +15,17 @@ public class RouterDto
     public string? FirmwareVersion { get; set; }
     public string? RouterOsApiUrl { get; set; }
     public string? RouterOsApiUsername { get; set; }
+    /// <summary>
+    /// Senha do usuário automais-io-api (senha forte gerada automaticamente).
+    /// Se nulo, significa que ainda não foi alterada e deve usar RouterOsApiPassword.
+    /// </summary>
+    public string? AutomaisApiPassword { get; set; }
     public Guid? VpnNetworkId { get; set; }
+    /// <summary>
+    /// Endpoint do servidor VPN associado (ex: "automais.io").
+    /// Usado para construir a URL do WebSocket dinamicamente.
+    /// </summary>
+    public string? VpnNetworkServerEndpoint { get; set; }
     public RouterStatus Status { get; set; }
     public DateTime? LastSeenAt { get; set; }
     public int? Latency { get; set; }

@@ -18,25 +18,114 @@ public class VpnServiceOptions
 
 /// <summary>
 /// Cliente HTTP para comunicação com o serviço VPN Python
+/// IMPORTANTE: As URLs são construídas dinamicamente baseadas no ServerEndpoint da VpnNetwork.
+/// Cada router pode estar associado a uma VpnNetwork diferente, que por sua vez pode ter um ServerEndpoint diferente.
+/// O ServerEndpoint identifica qual servidor VPN físico gerencia aquela rede.
 /// </summary>
 public class VpnServiceClient : IVpnServiceClient
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<VpnServiceClient> _logger;
     private readonly VpnServiceOptions _options;
+    private readonly IVpnNetworkRepository? _vpnNetworkRepository;
+    private readonly IRouterRepository? _routerRepository;
 
     public VpnServiceClient(
         HttpClient httpClient,
         IOptions<VpnServiceOptions> options,
-        ILogger<VpnServiceClient> logger)
+        ILogger<VpnServiceClient> logger,
+        IVpnNetworkRepository? vpnNetworkRepository = null,
+        IRouterRepository? routerRepository = null)
     {
         _httpClient = httpClient;
         _options = options.Value;
         _logger = logger;
+        _vpnNetworkRepository = vpnNetworkRepository;
+        _routerRepository = routerRepository;
 
-        // Configurar base URL e timeout
-        _httpClient.BaseAddress = new Uri(_options.BaseUrl);
+        // NÃO configurar BaseAddress - URLs serão construídas dinamicamente por chamada
+        // baseadas no ServerEndpoint da VpnNetwork
         _httpClient.Timeout = TimeSpan.FromSeconds(_options.TimeoutSeconds);
+    }
+
+    /// <summary>
+    /// Busca o ServerEndpoint da VpnNetwork
+    /// </summary>
+    private async Task<string?> GetServerEndpointAsync(Guid vpnNetworkId, CancellationToken cancellationToken)
+    {
+        if (_vpnNetworkRepository == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(vpnNetworkId, cancellationToken);
+            return vpnNetwork?.ServerEndpoint;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Busca o ServerEndpoint do router via sua VpnNetwork
+    /// </summary>
+    private async Task<string?> GetServerEndpointFromRouterAsync(Guid routerId, CancellationToken cancellationToken)
+    {
+        if (_routerRepository == null || _vpnNetworkRepository == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var router = await _routerRepository.GetByIdAsync(routerId, cancellationToken);
+            if (router?.VpnNetworkId == null)
+            {
+                return null;
+            }
+
+            return await GetServerEndpointAsync(router.VpnNetworkId.Value, cancellationToken);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Constrói a URL base do serviço VPN baseada no ServerEndpoint.
+    /// IMPORTANTE: O ServerEndpoint identifica qual servidor VPN físico gerencia a rede.
+    /// Cada VpnNetwork pode ter um ServerEndpoint diferente, permitindo múltiplos servidores VPN.
+    /// Se o ServerEndpoint não for fornecido, usa a URL padrão da configuração.
+    /// </summary>
+    private string GetBaseUrl(string? serverEndpoint = null)
+    {
+        if (string.IsNullOrWhiteSpace(serverEndpoint))
+        {
+            // Fallback para URL padrão se não houver ServerEndpoint
+            return _options.BaseUrl;
+        }
+
+        // Construir URL baseada no ServerEndpoint
+        // Formato esperado: http://{ServerEndpoint}:8000 ou https://{ServerEndpoint}:8000
+        // Se o ServerEndpoint já contém protocolo, usar; senão, adicionar http://
+        if (serverEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            serverEndpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            // Se já tem porta, usar como está; senão, adicionar porta padrão
+            if (serverEndpoint.Contains(':', StringComparison.Ordinal) && 
+                !serverEndpoint.EndsWith("://", StringComparison.OrdinalIgnoreCase))
+            {
+                return serverEndpoint;
+            }
+            return $"{serverEndpoint}:8000";
+        }
+
+        // Adicionar protocolo e porta padrão
+        return $"http://{serverEndpoint}:8000";
     }
 
     public async Task<ProvisionPeerResult> ProvisionPeerAsync(
@@ -60,8 +149,13 @@ public class VpnServiceClient : IVpnServiceClient
 
         try
         {
+            // Buscar ServerEndpoint da VpnNetwork para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointAsync(vpnNetworkId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/vpn/provision-peer";
+
             var response = await _httpClient.PostAsJsonAsync(
-                "/api/v1/vpn/provision-peer",
+                fullUrl,
                 request,
                 cancellationToken);
 
@@ -99,8 +193,13 @@ public class VpnServiceClient : IVpnServiceClient
 
         try
         {
+            // Buscar ServerEndpoint do router via VpnNetwork para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointFromRouterAsync(routerId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/vpn/config/{routerId}";
+
             var response = await _httpClient.GetAsync(
-                $"/api/v1/vpn/config/{routerId}",
+                fullUrl,
                 cancellationToken);
 
             response.EnsureSuccessStatusCode();
@@ -146,8 +245,13 @@ public class VpnServiceClient : IVpnServiceClient
 
         try
         {
+            // Buscar ServerEndpoint do router para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointFromRouterAsync(routerId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/vpn/add-network";
+
             var response = await _httpClient.PostAsJsonAsync(
-                "/api/v1/vpn/add-network",
+                fullUrl,
                 request,
                 cancellationToken);
 
@@ -178,8 +282,13 @@ public class VpnServiceClient : IVpnServiceClient
 
         try
         {
+            // Buscar ServerEndpoint do router para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointFromRouterAsync(routerId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/vpn/remove-network";
+
             var response = await _httpClient.SendAsync(
-                new HttpRequestMessage(HttpMethod.Delete, "/api/v1/vpn/remove-network")
+                new HttpRequestMessage(HttpMethod.Delete, fullUrl)
                 {
                     Content = JsonContent.Create(request)
                 },
@@ -210,8 +319,13 @@ public class VpnServiceClient : IVpnServiceClient
 
         try
         {
+            // Buscar ServerEndpoint da VpnNetwork para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointAsync(vpnNetworkId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/vpn/ensure-interface";
+
             var response = await _httpClient.PostAsJsonAsync(
-                "/api/v1/vpn/ensure-interface",
+                fullUrl,
                 request,
                 cancellationToken);
 
@@ -240,8 +354,13 @@ public class VpnServiceClient : IVpnServiceClient
 
         try
         {
+            // Buscar ServerEndpoint da VpnNetwork para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointAsync(vpnNetworkId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/vpn/remove-interface";
+
             var response = await _httpClient.SendAsync(
-                new HttpRequestMessage(HttpMethod.Delete, "/api/v1/vpn/remove-interface")
+                new HttpRequestMessage(HttpMethod.Delete, fullUrl)
                 {
                     Content = JsonContent.Create(request)
                 },
@@ -281,8 +400,13 @@ public class VpnServiceClient : IVpnServiceClient
 
         try
         {
+            // Buscar ServerEndpoint do router para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointFromRouterAsync(routerId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/routeros/add-route";
+
             var response = await _httpClient.PostAsJsonAsync(
-                "/api/v1/routeros/add-route",
+                fullUrl,
                 request,
                 cancellationToken);
 
@@ -318,8 +442,13 @@ public class VpnServiceClient : IVpnServiceClient
 
         try
         {
+            // Buscar ServerEndpoint do router para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointFromRouterAsync(routerId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/routeros/remove-route";
+
             var response = await _httpClient.PostAsJsonAsync(
-                "/api/v1/routeros/remove-route",
+                fullUrl,
                 request,
                 cancellationToken);
 

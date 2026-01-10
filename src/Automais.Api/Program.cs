@@ -277,13 +277,30 @@ builder.Services.Configure<WireGuardSettings>(
 builder.Services.Configure<Automais.Infrastructure.Services.VpnServiceOptions>(
     builder.Configuration.GetSection("VpnService"));
 
+// Configuração do serviço RouterOS WebSocket
+builder.Services.Configure<Automais.Infrastructure.Services.RouterOsWebSocketOptions>(
+    builder.Configuration.GetSection("RouterOsWebSocket"));
+
 // Registrar HttpClient para serviço VPN Python
+// IMPORTANTE: BaseAddress NÃO é configurado aqui porque as URLs são dinâmicas,
+// baseadas no ServerEndpoint da VpnNetwork de cada router.
+// Cada router pode estar associado a uma VpnNetwork diferente, que por sua vez
+// pode ter um ServerEndpoint diferente, permitindo múltiplos servidores VPN.
 builder.Services.AddHttpClient<Automais.Core.Interfaces.IVpnServiceClient, Automais.Infrastructure.Services.VpnServiceClient>((sp, client) =>
 {
     var options = sp.GetRequiredService<IOptions<Automais.Infrastructure.Services.VpnServiceOptions>>().Value;
-    client.BaseAddress = new Uri(options.BaseUrl);
+    // NÃO configurar BaseAddress - URLs serão construídas dinamicamente por chamada
+    // baseadas no ServerEndpoint da VpnNetwork
     client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
+})
+.ConfigureHttpClient((sp, client) =>
+{
+    // Injetar dependências necessárias para buscar ServerEndpoint dinamicamente
+    // Isso é feito via factory pattern no construtor do VpnServiceClient
 });
+
+// Registrar cliente WebSocket RouterOS
+builder.Services.AddScoped<Automais.Core.Interfaces.IRouterOsWebSocketClient, Automais.Infrastructure.Services.RouterOsWebSocketClient>();
 
 builder.Services.AddScoped<IVpnNetworkService>(sp =>
 {
@@ -316,7 +333,8 @@ builder.Services.AddScoped<IRouterService>(sp =>
     var tenantRepo = sp.GetRequiredService<ITenantRepository>();
     var allowedNetworkRepo = sp.GetService<IRouterAllowedNetworkRepository>();
     var wireGuardService = sp.GetService<IRouterWireGuardService>(); // Opcional
-    return new RouterService(routerRepo, tenantRepo, allowedNetworkRepo, wireGuardService);
+    var vpnNetworkRepo = sp.GetService<IVpnNetworkRepository>(); // Opcional
+    return new RouterService(routerRepo, tenantRepo, allowedNetworkRepo, wireGuardService, vpnNetworkRepo);
 });
 
 // Registrar RouterStaticRouteService

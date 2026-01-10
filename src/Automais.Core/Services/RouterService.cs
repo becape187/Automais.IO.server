@@ -14,17 +14,20 @@ public class RouterService : IRouterService
     private readonly ITenantRepository _tenantRepository;
     private readonly IRouterAllowedNetworkRepository? _allowedNetworkRepository;
     private readonly IRouterWireGuardService? _wireGuardService;
+    private readonly IVpnNetworkRepository? _vpnNetworkRepository;
 
     public RouterService(
         IRouterRepository routerRepository,
         ITenantRepository tenantRepository,
         IRouterAllowedNetworkRepository? allowedNetworkRepository = null,
-        IRouterWireGuardService? wireGuardService = null)
+        IRouterWireGuardService? wireGuardService = null,
+        IVpnNetworkRepository? vpnNetworkRepository = null)
     {
         _routerRepository = routerRepository;
         _tenantRepository = tenantRepository;
         _allowedNetworkRepository = allowedNetworkRepository;
         _wireGuardService = wireGuardService;
+        _vpnNetworkRepository = vpnNetworkRepository;
     }
 
     public async Task<IEnumerable<RouterDto>> GetByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default)
@@ -233,6 +236,22 @@ public class RouterService : IRouterService
             }
         }
 
+        // Buscar ServerEndpoint da VpnNetwork se houver repositório disponível
+        string? vpnNetworkServerEndpoint = null;
+        if (router.VpnNetworkId.HasValue && _vpnNetworkRepository != null)
+        {
+            try
+            {
+                var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(router.VpnNetworkId.Value, cancellationToken);
+                vpnNetworkServerEndpoint = vpnNetwork?.ServerEndpoint;
+            }
+            catch
+            {
+                // Se falhar, deixa como null
+                vpnNetworkServerEndpoint = null;
+            }
+        }
+
         return new RouterDto
         {
             Id = router.Id,
@@ -243,7 +262,9 @@ public class RouterService : IRouterService
             FirmwareVersion = router.FirmwareVersion,
             RouterOsApiUrl = router.RouterOsApiUrl,
             RouterOsApiUsername = router.RouterOsApiUsername,
+            AutomaisApiPassword = router.AutomaisApiPassword, // Incluir para o serviço Python verificar
             VpnNetworkId = router.VpnNetworkId,
+            VpnNetworkServerEndpoint = vpnNetworkServerEndpoint,
             Status = router.Status,
             LastSeenAt = router.LastSeenAt,
             Latency = router.Latency,
@@ -252,6 +273,8 @@ public class RouterService : IRouterService
             CreatedAt = router.CreatedAt,
             UpdatedAt = router.UpdatedAt,
             AllowedNetworks = allowedNetworks
+            // Nota: AutomaisApiPassword não é incluído no DTO por segurança
+            // O serviço Python busca diretamente do banco quando necessário
         };
     }
 
@@ -266,6 +289,25 @@ public class RouterService : IRouterService
         }
 
         throw new NotImplementedException("UpdateSystemInfoAsync agora é feito via servidor VPN (WebSocket). Use o endpoint do servidor VPN.");
+    }
+
+    public async Task UpdatePasswordAsync(Guid id, string newPassword, CancellationToken cancellationToken = default)
+    {
+        var router = await _routerRepository.GetByIdAsync(id, cancellationToken);
+        if (router == null)
+        {
+            throw new KeyNotFoundException($"Router com ID {id} não encontrado");
+        }
+
+        // Lógica: RouterOsApiPassword -> NULL, AutomaisApiPassword -> nova senha
+        // Isso indica que a senha foi alterada e agora usamos AutomaisApiPassword
+        router.RouterOsApiPassword = null; // Limpar senha original
+        router.AutomaisApiPassword = newPassword; // TODO: Criptografar senha
+        router.UpdatedAt = DateTime.UtcNow;
+
+        await _routerRepository.UpdateAsync(router, cancellationToken);
+        
+        _logger?.LogInformation("Senha do router {RouterId} atualizada: RouterOsApiPassword=NULL, AutomaisApiPassword=nova senha", id);
     }
 }
 

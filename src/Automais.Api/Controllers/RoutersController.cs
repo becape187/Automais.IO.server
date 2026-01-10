@@ -255,5 +255,44 @@ public class RoutersController : ControllerBase
             });
         }
     }
+
+    /// <summary>
+    /// Atualiza a senha do router e marca PasswordChanged como true.
+    /// Usado quando a senha é alterada automaticamente na primeira conexão.
+    /// </summary>
+    [HttpPut("routers/{id:guid}/password")]
+    public async Task<IActionResult> UpdatePassword(Guid id, [FromBody] UpdatePasswordDto dto, CancellationToken cancellationToken)
+    {
+        try
+        {
+            _logger.LogInformation("Atualizando senha do router {RouterId}", id);
+            await _routerService.UpdatePasswordAsync(id, dto.Password, cancellationToken);
+            return Ok(new { message = "Senha atualizada com sucesso" });
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Router não encontrado para atualização de senha");
+            return NotFound(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao atualizar senha do router {RouterId}", id);
+            return StatusCode(500, new
+            {
+                message = "Erro interno do servidor ao atualizar senha",
+                detail = ex.Message,
+                innerException = ex.InnerException?.Message,
+                exceptionType = ex.GetType().Name
+            });
+        }
+    }
+}
+
+/// <summary>
+/// DTO para atualização de senha do router
+/// </summary>
+public class UpdatePasswordDto
+{
+    public string Password { get; set; } = string.Empty;
 }
 

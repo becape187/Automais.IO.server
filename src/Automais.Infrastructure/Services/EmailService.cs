@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Net;
 using MailKit.Net.Smtp;
 using MailKit.Security;
@@ -27,9 +28,9 @@ public class EmailService : IEmailService
         
         // Office365 SMTP Configuration
         _smtpHost = _configuration["Email:Smtp:Host"] ?? Environment.GetEnvironmentVariable("SMTP_HOST") ?? "smtp.office365.com";
-        // Tentar porta 465 (SSL direto) primeiro, se não funcionar, usar 587 (STARTTLS)
+        // Porta 587 com STARTTLS (como no PowerShell que funcionou)
         var portConfig = _configuration["Email:Smtp:Port"] ?? Environment.GetEnvironmentVariable("SMTP_PORT");
-        _smtpPort = portConfig != null ? int.Parse(portConfig) : 465; // Porta 465 usa SSL direto, mais confiável
+        _smtpPort = portConfig != null ? int.Parse(portConfig) : 587;
         _smtpUsername = _configuration["Email:Smtp:Username"] ?? Environment.GetEnvironmentVariable("SMTP_USERNAME") ?? "noreply@automais.io";
         _smtpPassword = _configuration["Email:Smtp:Password"] ?? Environment.GetEnvironmentVariable("SMTP_PASSWORD") ?? Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
         // Remover espaços em branco da senha (pode ter sido adicionado acidentalmente)
@@ -37,6 +38,12 @@ public class EmailService : IEmailService
         {
             _smtpPassword = _smtpPassword.Trim();
         }
+        
+        // Log para debug (sem expor senha completa)
+        _logger?.LogInformation("EmailService inicializado - Host: {Host}, Port: {Port}, Username: {Username}, Password Length: {PasswordLength}, Password primeiro char: {FirstChar}, último char: {LastChar}", 
+            _smtpHost, _smtpPort, _smtpUsername, _smtpPassword?.Length ?? 0,
+            _smtpPassword?.Length > 0 ? _smtpPassword[0].ToString() : "N/A",
+            _smtpPassword?.Length > 0 ? _smtpPassword[_smtpPassword.Length - 1].ToString() : "N/A");
         _smtpUseSsl = bool.Parse(_configuration["Email:Smtp:UseSsl"] ?? Environment.GetEnvironmentVariable("SMTP_USE_SSL") ?? "true");
         _fromEmail = _configuration["Email:From:Address"] ?? Environment.GetEnvironmentVariable("EMAIL_FROM_ADDRESS") ?? "noreply@automais.io";
         _fromName = _configuration["Email:From:Name"] ?? Environment.GetEnvironmentVariable("EMAIL_FROM_NAME") ?? "Automais.IO";
@@ -95,18 +102,38 @@ public class EmailService : IEmailService
 
         try
         {
-            // Log detalhado da configuração (sem expor senha)
-            _logger?.LogInformation("Tentando enviar email para {Email} via {Host}:{Port} com usuário {Username} (Password Length: {PasswordLength})", 
-                toEmail, _smtpHost, _smtpPort, _smtpUsername, _smtpPassword?.Length ?? 0);
+            // Log detalhado da configuração - DEBUG: mostrando credenciais completas
+            _logger?.LogWarning("=== DEBUG SMTP - Credenciais completas ===");
+            _logger?.LogWarning("Host: {Host}", _smtpHost);
+            _logger?.LogWarning("Port: {Port}", _smtpPort);
+            _logger?.LogWarning("Username: '{Username}' (Length: {UsernameLength})", _smtpUsername, _smtpUsername?.Length ?? 0);
+            _logger?.LogWarning("Password: '{Password}' (Length: {PasswordLength})", _smtpPassword, _smtpPassword?.Length ?? 0);
+            _logger?.LogWarning("From Email: '{FromEmail}'", _fromEmail);
+            _logger?.LogWarning("To Email: '{ToEmail}'", toEmail);
+            
+            // Verificar se a senha tem caracteres não imprimíveis
+            if (!string.IsNullOrWhiteSpace(_smtpPassword))
+            {
+                var hasNonPrintable = _smtpPassword.Any(c => !char.IsLetterOrDigit(c) && !char.IsPunctuation(c) && !char.IsSymbol(c));
+                var hexChars = string.Join(" ", _smtpPassword.Select(c => $"{c}({(int)c:X2})"));
+                _logger?.LogWarning("Senha análise - HasNonPrintable: {HasNonPrintable}, Hex: {HexChars}", hasNonPrintable, hexChars);
+            }
+            _logger?.LogWarning("=== FIM DEBUG SMTP ===");
 
             // Usar MailKit que tem melhor suporte para Office365 e STARTTLS
             using var client = new SmtpClient();
             
+            _logger?.LogDebug("Conectando ao servidor SMTP {Host}:{Port} com STARTTLS", _smtpHost, _smtpPort);
+            
             // Conectar ao servidor SMTP com STARTTLS (Office365 requer na porta 587)
             await client.ConnectAsync(_smtpHost, _smtpPort, SecureSocketOptions.StartTls, cancellationToken);
             
+            _logger?.LogDebug("Conectado. Tentando autenticar com usuário {Username}", _smtpUsername);
+            
             // Autenticar
             await client.AuthenticateAsync(_smtpUsername, _smtpPassword, cancellationToken);
+            
+            _logger?.LogDebug("Autenticado com sucesso");
 
             _logger?.LogDebug("Conectado e autenticado no servidor SMTP");
 

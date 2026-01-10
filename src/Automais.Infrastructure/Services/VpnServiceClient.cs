@@ -493,8 +493,8 @@ public class VpnServiceClient : IVpnServiceClient
                         PublicKey = i.PublicKey ?? string.Empty,
                         ListenPort = i.ListenPort,
                         Mtu = i.Mtu,
-                        Disabled = i.Disabled == "true" || i.Disabled == true,
-                        Running = i.Running == "true" || i.Running == true
+                        Disabled = ConvertToBool(i.Disabled),
+                        Running = ConvertToBool(i.Running)
                     }).ToList();
                 }
             }
@@ -546,6 +546,23 @@ public class VpnServiceClient : IVpnServiceClient
         public string? Mtu { get; set; }
         public object? Disabled { get; set; } // Pode ser string "true"/"false" ou bool
         public object? Running { get; set; } // Pode ser string "true"/"false" ou bool
+    }
+
+    /// <summary>
+    /// Converte um valor (string ou bool) para bool
+    /// </summary>
+    private static bool ConvertToBool(object? value)
+    {
+        if (value == null)
+            return false;
+        
+        if (value is bool boolValue)
+            return boolValue;
+        
+        if (value is string stringValue)
+            return stringValue.Equals("true", StringComparison.OrdinalIgnoreCase);
+        
+        return false;
     }
 }
 

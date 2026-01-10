@@ -80,5 +80,12 @@ public interface IVpnServiceClient
         Guid routerId,
         string routerOsRouteId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lista interfaces WireGuard do RouterOS
+    /// </summary>
+    Task<List<RouterOsWireGuardInterfaceDto>> ListWireGuardInterfacesAsync(
+        Guid routerId,
+        CancellationToken cancellationToken = default);
 }
 

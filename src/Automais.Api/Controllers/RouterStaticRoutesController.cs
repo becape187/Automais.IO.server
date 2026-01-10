@@ -456,5 +456,36 @@ public class RouterStaticRoutesController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Lista interfaces WireGuard do RouterOS para dedução automática
+    /// </summary>
+    [HttpGet("wireguard-interfaces")]
+    public async Task<ActionResult<List<RouterOsWireGuardInterfaceDto>>> GetWireGuardInterfaces(
+        Guid routerId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Listando interfaces WireGuard do router {RouterId}", routerId);
+
+        try
+        {
+            if (_vpnServiceClient == null)
+            {
+                return BadRequest(new { message = "Serviço VPN não configurado" });
+            }
+
+            var interfaces = await _vpnServiceClient.ListWireGuardInterfacesAsync(routerId, cancellationToken);
+            return Ok(interfaces);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao listar interfaces WireGuard do router {RouterId}", routerId);
+            return StatusCode(500, new 
+            { 
+                message = "Erro interno do servidor ao listar interfaces WireGuard",
+                detail = ex.Message
+            });
+        }
+    }
+
 }
 

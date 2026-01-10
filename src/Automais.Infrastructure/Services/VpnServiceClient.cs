@@ -467,6 +467,47 @@ public class VpnServiceClient : IVpnServiceClient
         }
     }
 
+    public async Task<List<RouterOsWireGuardInterfaceDto>> ListWireGuardInterfacesAsync(
+        Guid routerId,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("Chamando serviço VPN para listar interfaces WireGuard: Router={RouterId}", routerId);
+
+        try
+        {
+            // Buscar ServerEndpoint do router para construir URL dinâmica
+            var serverEndpoint = await GetServerEndpointFromRouterAsync(routerId, cancellationToken);
+            var baseUrl = GetBaseUrl(serverEndpoint);
+            var fullUrl = $"{baseUrl.TrimEnd('/')}/api/v1/routeros/{routerId}/wireguard-interfaces";
+
+            var response = await _httpClient.GetAsync(fullUrl, cancellationToken);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var result = await response.Content.ReadFromJsonAsync<WireGuardInterfacesResponse>(cancellationToken: cancellationToken);
+                if (result?.Success == true && result.Interfaces != null)
+                {
+                    return result.Interfaces.Select(i => new RouterOsWireGuardInterfaceDto
+                    {
+                        Name = i.Name ?? string.Empty,
+                        PublicKey = i.PublicKey ?? string.Empty,
+                        ListenPort = i.ListenPort,
+                        Mtu = i.Mtu,
+                        Disabled = i.Disabled == "true" || i.Disabled == true,
+                        Running = i.Running == "true" || i.Running == true
+                    }).ToList();
+                }
+            }
+
+            return new List<RouterOsWireGuardInterfaceDto>();
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "Erro ao chamar serviço VPN para listar interfaces WireGuard");
+            return new List<RouterOsWireGuardInterfaceDto>();
+        }
+    }
+
     // Classes auxiliares para deserialização
     private class ProvisionPeerResponse
     {
@@ -489,6 +530,22 @@ public class VpnServiceClient : IVpnServiceClient
         public string? Message { get; set; }
         public string? RouterOsId { get; set; }
         public string? Error { get; set; }
+    }
+
+    private class WireGuardInterfacesResponse
+    {
+        public bool Success { get; set; }
+        public List<WireGuardInterfaceItem>? Interfaces { get; set; }
+    }
+
+    private class WireGuardInterfaceItem
+    {
+        public string? Name { get; set; }
+        public string? PublicKey { get; set; }
+        public string? ListenPort { get; set; }
+        public string? Mtu { get; set; }
+        public object? Disabled { get; set; } // Pode ser string "true"/"false" ou bool
+        public object? Running { get; set; } // Pode ser string "true"/"false" ou bool
     }
 }
 

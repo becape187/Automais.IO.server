@@ -273,7 +273,7 @@ builder.Services.Configure<Automais.Infrastructure.Services.VpnServiceOptions>(
     builder.Configuration.GetSection("VpnService"));
 
 // Registrar HttpClient para serviço VPN Python
-builder.Services.AddHttpClient<IVpnServiceClient, Automais.Infrastructure.Services.VpnServiceClient>((sp, client) =>
+builder.Services.AddHttpClient<Automais.Core.Interfaces.IVpnServiceClient, Automais.Infrastructure.Services.VpnServiceClient>((sp, client) =>
 {
     var options = sp.GetRequiredService<IOptions<Automais.Infrastructure.Services.VpnServiceOptions>>().Value;
     client.BaseAddress = new Uri(options.BaseUrl);
@@ -287,7 +287,7 @@ builder.Services.AddScoped<IVpnNetworkService>(sp =>
     var deviceRepo = sp.GetRequiredService<IDeviceRepository>();
     var tenantUserService = sp.GetRequiredService<ITenantUserService>();
     var wireGuardSettings = sp.GetRequiredService<IOptions<WireGuardSettings>>();
-    var vpnServiceClient = sp.GetService<IVpnServiceClient>(); // Opcional
+    var vpnServiceClient = sp.GetService<Automais.Core.Interfaces.IVpnServiceClient>(); // Opcional
     return new VpnNetworkService(tenantRepo, vpnNetworkRepo, deviceRepo, tenantUserService, wireGuardSettings, vpnServiceClient);
 });
 
@@ -299,7 +299,7 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
     var peerRepo = sp.GetRequiredService<IRouterWireGuardPeerRepository>();
     var routerRepo = sp.GetRequiredService<IRouterRepository>();
     var vpnNetworkRepo = sp.GetRequiredService<IVpnNetworkRepository>();
-    var vpnServiceClient = sp.GetRequiredService<IVpnServiceClient>();
+    var vpnServiceClient = sp.GetRequiredService<Automais.Core.Interfaces.IVpnServiceClient>();
     var wireGuardSettings = sp.GetRequiredService<IOptions<WireGuardSettings>>();
     var logger = sp.GetService<ILogger<Automais.Core.Services.RouterWireGuardService>>();
     return new Automais.Core.Services.RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, vpnServiceClient, logger);

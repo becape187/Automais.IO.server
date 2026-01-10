@@ -23,6 +23,7 @@ public class VpnNetworkRepository : IVpnNetworkRepository
     public async Task<IEnumerable<VpnNetwork>> GetAllAsync(CancellationToken cancellationToken = default)
     {
         return await _context.VpnNetworks
+            .Include(n => n.VpnServer)
             .OrderBy(n => n.Name)
             .ToListAsync(cancellationToken);
     }

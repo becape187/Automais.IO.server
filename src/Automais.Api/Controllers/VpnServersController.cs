@@ -40,14 +40,19 @@ public class VpnServersController : ControllerBase
             _logger.LogInformation("Serviço VPN '{ServerName}' consultando seus recursos", serverName);
 
             // Buscar todas as VpnNetworks associadas a este servidor VPN
-            // TODO: Quando tiver VpnServerRepository, buscar pelo ServerName
+            // Primeiro, precisamos buscar o VpnServer pelo ServerName
+            // Como não temos VpnServerRepository ainda, vamos buscar via DbContext
             // Por enquanto, vamos buscar todas as VpnNetworks e filtrar depois
             var allVpnNetworks = await _vpnNetworkRepository.GetAllAsync(cancellationToken);
             
             // Filtrar VpnNetworks que pertencem a este servidor
+            // Usar VpnServerId e buscar o servidor separadamente se necessário
+            // Por enquanto, vamos usar uma abordagem mais simples: buscar por VpnServerId
             // TODO: Implementar busca direta quando tiver VpnServerRepository
             var vpnNetworks = allVpnNetworks
-                .Where(vpn => vpn.VpnServer != null && vpn.VpnServer.ServerName == serverName)
+                .Where(vpn => vpn.VpnServerId.HasValue)
+                .ToList()
+                .Where(vpn => vpn.VpnServer?.ServerName == serverName)
                 .Select(vpn => new
                 {
                     id = vpn.Id.ToString(),

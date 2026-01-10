@@ -3,6 +3,16 @@ using Automais.Core.DTOs;
 namespace Automais.Core.Interfaces;
 
 /// <summary>
+/// Resultado do provisionamento de peer
+/// </summary>
+public class ProvisionPeerResult
+{
+    public string PublicKey { get; set; } = string.Empty;
+    public string PrivateKey { get; set; } = string.Empty;
+    public string AllowedIps { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// Cliente HTTP para comunicação com o serviço VPN Python
 /// </summary>
 public interface IVpnServiceClient

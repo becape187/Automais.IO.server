@@ -17,6 +17,9 @@ using System.Security.Cryptography.X509Certificates;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Habilitar integração com systemd (notifica quando a aplicação está pronta)
+builder.Host.UseSystemd();
+
 // ===== Configuração de Serviços =====
 
 // Substituir variáveis de ambiente no formato ${VAR} nas configurações

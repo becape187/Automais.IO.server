@@ -13,20 +13,17 @@ public class RouterBackupService : IRouterBackupService
 {
     private readonly IRouterBackupRepository _backupRepository;
     private readonly IRouterRepository _routerRepository;
-    private readonly IRouterOsClient _routerOsClient;
     private readonly ITenantUserRepository? _tenantUserRepository;
     private readonly string _backupStoragePath;
 
     public RouterBackupService(
         IRouterBackupRepository backupRepository,
         IRouterRepository routerRepository,
-        IRouterOsClient routerOsClient,
         ITenantUserRepository? tenantUserRepository = null,
         string backupStoragePath = "/backups/routers")
     {
         _backupRepository = backupRepository;
         _routerRepository = routerRepository;
-        _routerOsClient = routerOsClient;
         _tenantUserRepository = tenantUserRepository;
         _backupStoragePath = backupStoragePath;
     }
@@ -58,13 +55,11 @@ public class RouterBackupService : IRouterBackupService
             throw new InvalidOperationException("Credenciais da API RouterOS não configuradas.");
         }
 
-        // Exportar configuração do router
-        var configContent = await _routerOsClient.ExportConfigAsync(
-            router.RouterOsApiUrl,
-            router.RouterOsApiUsername,
-            router.RouterOsApiPassword,
-            cancellationToken);
+        // Exportar configuração do router agora é feito via servidor VPN
+        throw new NotImplementedException("CreateBackupAsync agora é feito via servidor VPN (WebSocket). Use o endpoint do servidor VPN.");
 
+        // Código comentado - não será executado devido ao throw acima
+        /*
         // Adicionar header com metadados
         var header = new StringBuilder();
         header.AppendLine("# RouterOS Configuration Export");
@@ -123,6 +118,7 @@ public class RouterBackupService : IRouterBackupService
 
         var created = await _backupRepository.CreateAsync(backup, cancellationToken);
         return MapToDto(created);
+        */
     }
 
     public async Task DeleteBackupAsync(Guid id, CancellationToken cancellationToken = default)
@@ -194,21 +190,11 @@ public class RouterBackupService : IRouterBackupService
             throw new InvalidOperationException("Backup não pertence a este router.");
         }
 
-        // Exportar configuração atual
-        string currentConfig;
-        try
-        {
-            currentConfig = await _routerOsClient.ExportConfigAsync(
-                router.RouterOsApiUrl!,
-                router.RouterOsApiUsername!,
-                router.RouterOsApiPassword!,
-                cancellationToken);
-        }
-        catch
-        {
-            throw new InvalidOperationException("Não foi possível exportar configuração atual do router.");
-        }
+        // Exportar configuração atual agora é feito via servidor VPN
+        throw new NotImplementedException("CompareBackupAsync agora é feito via servidor VPN (WebSocket). Use o endpoint do servidor VPN.");
 
+        // Código comentado - não será executado devido ao throw acima
+        /*
         // Ler backup
         var backupContent = await GetBackupContentAsync(backupId, cancellationToken);
 
@@ -227,6 +213,7 @@ public class RouterBackupService : IRouterBackupService
             Differences = differences,
             UnifiedDiff = unifiedDiff
         };
+        */
     }
 
     public async Task RestoreBackupAsync(Guid routerId, Guid backupId, RestoreRouterBackupDto dto, CancellationToken cancellationToken = default)
@@ -259,13 +246,8 @@ public class RouterBackupService : IRouterBackupService
             return;
         }
 
-        // Aplicar configuração
-        await _routerOsClient.ImportConfigAsync(
-            router.RouterOsApiUrl!,
-            router.RouterOsApiUsername!,
-            router.RouterOsApiPassword!,
-            configContent,
-            cancellationToken);
+        // Aplicar configuração agora é feito via servidor VPN
+        throw new NotImplementedException("RestoreBackupAsync agora é feito via servidor VPN (WebSocket). Use o endpoint do servidor VPN.");
     }
 
     private List<ConfigDifferenceDto> CompareConfigs(string current, string backup)

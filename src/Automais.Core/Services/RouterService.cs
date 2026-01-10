@@ -12,20 +12,17 @@ public class RouterService : IRouterService
 {
     private readonly IRouterRepository _routerRepository;
     private readonly ITenantRepository _tenantRepository;
-    private readonly IRouterOsClient _routerOsClient;
     private readonly IRouterAllowedNetworkRepository? _allowedNetworkRepository;
     private readonly IRouterWireGuardService? _wireGuardService;
 
     public RouterService(
         IRouterRepository routerRepository,
         ITenantRepository tenantRepository,
-        IRouterOsClient routerOsClient,
         IRouterAllowedNetworkRepository? allowedNetworkRepository = null,
         IRouterWireGuardService? wireGuardService = null)
     {
         _routerRepository = routerRepository;
         _tenantRepository = tenantRepository;
-        _routerOsClient = routerOsClient;
         _allowedNetworkRepository = allowedNetworkRepository;
         _wireGuardService = wireGuardService;
     }
@@ -207,122 +204,15 @@ public class RouterService : IRouterService
 
     public async Task<RouterDto> TestConnectionAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        // Teste de conexão agora é feito via servidor VPN (WebSocket)
+        // Este método é mantido para compatibilidade, mas não faz nada
         var router = await _routerRepository.GetByIdAsync(id, cancellationToken);
         if (router == null)
         {
             throw new KeyNotFoundException($"Router com ID {id} não encontrado.");
         }
 
-        if (string.IsNullOrWhiteSpace(router.RouterOsApiUrl) ||
-            string.IsNullOrWhiteSpace(router.RouterOsApiUsername) ||
-            string.IsNullOrWhiteSpace(router.RouterOsApiPassword))
-        {
-            throw new InvalidOperationException("Credenciais da API RouterOS não configuradas.");
-        }
-
-        // Timeout adicional de 15 segundos para não travar a API
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-        
-        var isConnected = await _routerOsClient.TestConnectionAsync(
-            router.RouterOsApiUrl,
-            router.RouterOsApiUsername,
-            router.RouterOsApiPassword,
-            linkedCts.Token);
-
-        router.Status = isConnected ? RouterStatus.Online : RouterStatus.Offline;
-        router.LastSeenAt = isConnected ? DateTime.UtcNow : router.LastSeenAt;
-        router.UpdatedAt = DateTime.UtcNow;
-
-        // Se conectou, buscar informações do sistema (Model, SerialNumber, FirmwareVersion)
-        if (isConnected)
-        {
-            try
-            {
-                // Timeout adicional de 15 segundos para não travar a API
-                using var timeoutCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-                using var linkedCts2 = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts2.Token);
-                
-                var systemInfo = await _routerOsClient.GetSystemInfoAsync(
-                    router.RouterOsApiUrl,
-                    router.RouterOsApiUsername,
-                    router.RouterOsApiPassword,
-                    linkedCts2.Token);
-
-                // Atualizar apenas se não estiverem preenchidos ou se vierem novos dados
-                if (!string.IsNullOrWhiteSpace(systemInfo.Model))
-                {
-                    router.Model = systemInfo.Model;
-                }
-                if (!string.IsNullOrWhiteSpace(systemInfo.SerialNumber))
-                {
-                    router.SerialNumber = systemInfo.SerialNumber;
-                }
-                if (!string.IsNullOrWhiteSpace(systemInfo.FirmwareVersion))
-                {
-                    router.FirmwareVersion = systemInfo.FirmwareVersion;
-                }
-            }
-            catch (Exception ex)
-            {
-                // Logar erro mas não falhar o teste de conexão
-                // TODO: Adicionar logging quando tiver ILogger
-                // Por enquanto, apenas continua sem atualizar essas informações
-            }
-
-            // Se conectou e ainda não criou o usuário automais-io-api, criar agora
-            if (!router.AutomaisApiUserCreated)
-            {
-                await CreateAutomaisApiUserAsync(router, cancellationToken);
-            }
-        }
-
-        var updated = await _routerRepository.UpdateAsync(router, cancellationToken);
-        return await MapToDtoAsync(updated, cancellationToken);
-    }
-
-    private async Task CreateAutomaisApiUserAsync(Router router, CancellationToken cancellationToken)
-    {
-        try
-        {
-            // Gerar senha forte
-            var password = GenerateStrongPassword();
-            const string username = "automais-io-api";
-
-            // Criar usuário no RouterOS
-            await _routerOsClient.CreateUserAsync(
-                router.RouterOsApiUrl!,
-                router.RouterOsApiUsername!,
-                router.RouterOsApiPassword!,
-                username,
-                password,
-                cancellationToken);
-
-            // Atualizar router com credenciais do automais-io-api
-            router.RouterOsApiUsername = username;
-            router.RouterOsApiPassword = password; // Atualizar também o RouterOsApiPassword
-            router.AutomaisApiPassword = password; // Texto plano inicialmente
-            router.AutomaisApiUserCreated = true;
-            router.UpdatedAt = DateTime.UtcNow;
-
-            // TODO: Logar criação do usuário
-        }
-        catch (Exception ex)
-        {
-            // Logar erro mas não falhar o teste de conexão
-            // TODO: Adicionar logging
-            throw new InvalidOperationException(
-                $"Erro ao criar usuário automais-io-api no router: {ex.Message}", ex);
-        }
-    }
-
-    private static string GenerateStrongPassword()
-    {
-        // Gera senha forte de 32 caracteres
-        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
-        var random = new Random();
-        return new string(Enumerable.Repeat(chars, 32)
-            .Select(s => s[random.Next(s.Length)]).ToArray());
+        throw new NotImplementedException("TestConnectionAsync agora é feito via servidor VPN (WebSocket). Use o endpoint do servidor VPN.");
     }
 
     private async Task<RouterDto> MapToDtoAsync(Router router, CancellationToken cancellationToken = default)
@@ -367,47 +257,15 @@ public class RouterService : IRouterService
 
     public async Task<RouterDto> UpdateSystemInfoAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        // Atualização de informações do sistema agora é feita via servidor VPN (WebSocket)
+        // Este método é mantido para compatibilidade, mas não faz nada
         var router = await _routerRepository.GetByIdAsync(id, cancellationToken);
         if (router == null)
         {
             throw new KeyNotFoundException($"Router com ID {id} não encontrado");
         }
 
-        // Verificar se tem credenciais
-        if (string.IsNullOrWhiteSpace(router.RouterOsApiUrl) ||
-            string.IsNullOrWhiteSpace(router.RouterOsApiUsername) ||
-            string.IsNullOrWhiteSpace(router.RouterOsApiPassword))
-        {
-            throw new InvalidOperationException("Credenciais da API RouterOS não configuradas");
-        }
-
-        // Buscar informações do sistema
-        var systemInfo = await _routerOsClient.GetSystemInfoAsync(
-            router.RouterOsApiUrl,
-            router.RouterOsApiUsername,
-            router.RouterOsApiPassword,
-            cancellationToken);
-
-        // Atualizar informações (sempre atualizar, mesmo se já existirem)
-        router.Model = systemInfo.Model;
-        router.SerialNumber = systemInfo.SerialNumber;
-        router.FirmwareVersion = systemInfo.FirmwareVersion;
-        
-        // Atualizar HardwareInfo com informações adicionais (JSON)
-        var hardwareInfo = new
-        {
-            cpuLoad = systemInfo.CpuLoad,
-            memoryUsage = systemInfo.MemoryUsage,
-            uptime = systemInfo.Uptime,
-            temperature = systemInfo.Temperature,
-            lastUpdated = DateTime.UtcNow
-        };
-        router.HardwareInfo = JsonSerializer.Serialize(hardwareInfo);
-        
-        router.UpdatedAt = DateTime.UtcNow;
-
-        var updated = await _routerRepository.UpdateAsync(router, cancellationToken);
-        return await MapToDtoAsync(updated, cancellationToken);
+        throw new NotImplementedException("UpdateSystemInfoAsync agora é feito via servidor VPN (WebSocket). Use o endpoint do servidor VPN.");
     }
 }
 

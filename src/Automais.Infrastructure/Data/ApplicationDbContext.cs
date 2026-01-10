@@ -23,6 +23,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<Router> Routers => Set<Router>();
     public DbSet<RouterWireGuardPeer> RouterWireGuardPeers => Set<RouterWireGuardPeer>();
     public DbSet<RouterAllowedNetwork> RouterAllowedNetworks => Set<RouterAllowedNetwork>();
+    public DbSet<RouterStaticRoute> RouterStaticRoutes => Set<RouterStaticRoute>();
     public DbSet<UserAllowedRoute> UserAllowedRoutes => Set<UserAllowedRoute>();
     public DbSet<RouterConfigLog> RouterConfigLogs => Set<RouterConfigLog>();
     public DbSet<RouterBackup> RouterBackups => Set<RouterBackup>();
@@ -429,6 +430,59 @@ public class ApplicationDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasIndex(e => new { e.RouterId, e.NetworkCidr })
+                .IsUnique();
+
+            entity.HasIndex(e => e.RouterId);
+        });
+
+        // Configuração de RouterStaticRoute
+        modelBuilder.Entity<RouterStaticRoute>(entity =>
+        {
+            entity.ToTable("router_static_routes");
+
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.RouterId).IsRequired();
+            entity.Property(e => e.Destination)
+                .IsRequired()
+                .HasMaxLength(50);
+
+            entity.Property(e => e.Gateway)
+                .IsRequired()
+                .HasMaxLength(50);
+
+            entity.Property(e => e.Interface)
+                .HasMaxLength(100);
+
+            entity.Property(e => e.RoutingTable)
+                .HasMaxLength(50);
+
+            entity.Property(e => e.Description)
+                .HasMaxLength(255);
+
+            entity.Property(e => e.Comment)
+                .IsRequired()
+                .HasMaxLength(255);
+
+            entity.Property(e => e.Status)
+                .IsRequired()
+                .HasConversion<string>();
+
+            entity.Property(e => e.ErrorMessage)
+                .HasMaxLength(500);
+
+            entity.Property(e => e.RouterOsId)
+                .HasMaxLength(100);
+
+            entity.Property(e => e.CreatedAt).IsRequired();
+            entity.Property(e => e.UpdatedAt).IsRequired();
+
+            entity.HasOne(e => e.Router)
+                .WithMany(r => r.StaticRoutes)
+                .HasForeignKey(e => e.RouterId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(e => new { e.RouterId, e.Destination })
                 .IsUnique();
 
             entity.HasIndex(e => e.RouterId);

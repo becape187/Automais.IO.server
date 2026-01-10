@@ -97,6 +97,7 @@ public class Router
     public ICollection<RouterWireGuardPeer> WireGuardPeers { get; set; } = new List<RouterWireGuardPeer>();
     public ICollection<RouterConfigLog> ConfigLogs { get; set; } = new List<RouterConfigLog>();
     public ICollection<RouterBackup> Backups { get; set; } = new List<RouterBackup>();
+    public ICollection<RouterStaticRoute> StaticRoutes { get; set; } = new List<RouterStaticRoute>();
 }
 
 public enum RouterStatus

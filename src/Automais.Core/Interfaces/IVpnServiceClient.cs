@@ -64,5 +64,21 @@ public interface IVpnServiceClient
     Task RemoveInterfaceAsync(
         Guid vpnNetworkId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Adiciona rota estática no RouterOS via VPN server
+    /// </summary>
+    Task<bool> AddRouteAsync(
+        Guid routerId,
+        RouterStaticRouteDto route,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Remove rota estática do RouterOS via VPN server
+    /// </summary>
+    Task<bool> RemoveRouteAsync(
+        Guid routerId,
+        string routerOsRouteId,
+        CancellationToken cancellationToken = default);
 }
 

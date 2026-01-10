@@ -257,6 +257,87 @@ public class VpnServiceClient : IVpnServiceClient
         }
     }
 
+    public async Task<bool> AddRouteAsync(
+        Guid routerId,
+        RouterStaticRouteDto route,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new
+        {
+            router_id = routerId.ToString(),
+            route_id = route.Id.ToString(),
+            destination = route.Destination,
+            gateway = route.Gateway,
+            interface_name = route.Interface,
+            distance = route.Distance,
+            scope = route.Scope,
+            routing_table = route.RoutingTable,
+            comment = route.Comment
+        };
+
+        _logger.LogInformation(
+            "Chamando serviço VPN para adicionar rota: Router={RouterId}, Route={RouteId}, Destination={Destination}",
+            routerId, route.Id, route.Destination);
+
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync(
+                "/api/v1/routeros/add-route",
+                request,
+                cancellationToken);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var result = await response.Content.ReadFromJsonAsync<RouteOperationResponse>(cancellationToken: cancellationToken);
+                return result?.Success ?? false;
+            }
+
+            return false;
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "Erro ao chamar serviço VPN para adicionar rota");
+            return false;
+        }
+    }
+
+    public async Task<bool> RemoveRouteAsync(
+        Guid routerId,
+        string routerOsRouteId,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new
+        {
+            router_id = routerId.ToString(),
+            router_os_route_id = routerOsRouteId
+        };
+
+        _logger.LogInformation(
+            "Chamando serviço VPN para remover rota: Router={RouterId}, RouterOsRouteId={RouterOsRouteId}",
+            routerId, routerOsRouteId);
+
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync(
+                "/api/v1/routeros/remove-route",
+                request,
+                cancellationToken);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var result = await response.Content.ReadFromJsonAsync<RouteOperationResponse>(cancellationToken: cancellationToken);
+                return result?.Success ?? false;
+            }
+
+            return false;
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "Erro ao chamar serviço VPN para remover rota");
+            return false;
+        }
+    }
+
     // Classes auxiliares para deserialização
     private class ProvisionPeerResponse
     {
@@ -271,6 +352,14 @@ public class VpnServiceClient : IVpnServiceClient
     {
         public string ConfigContent { get; set; } = string.Empty;
         public string Filename { get; set; } = string.Empty;
+    }
+
+    private class RouteOperationResponse
+    {
+        public bool Success { get; set; }
+        public string? Message { get; set; }
+        public string? RouterOsId { get; set; }
+        public string? Error { get; set; }
     }
 }
 

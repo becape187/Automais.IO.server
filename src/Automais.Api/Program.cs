@@ -257,6 +257,7 @@ builder.Services.AddScoped<IVpnNetworkRepository, VpnNetworkRepository>();
 builder.Services.AddScoped<IRouterRepository, RouterRepository>();
 builder.Services.AddScoped<IRouterWireGuardPeerRepository, RouterWireGuardPeerRepository>();
 builder.Services.AddScoped<IRouterAllowedNetworkRepository, RouterAllowedNetworkRepository>();
+builder.Services.AddScoped<IRouterStaticRouteRepository, Automais.Infrastructure.Repositories.RouterStaticRouteRepository>();
 builder.Services.AddScoped<IUserAllowedRouteRepository, Automais.Infrastructure.Repositories.UserAllowedRouteRepository>();
 builder.Services.AddScoped<IRouterConfigLogRepository, RouterConfigLogRepository>();
 builder.Services.AddScoped<IRouterBackupRepository, RouterBackupRepository>();
@@ -308,14 +309,23 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
 });
 
 // Registrar RouterService com RouterWireGuardService como dependência opcional
+// RouterOsClient removido - comunicação RouterOS agora é feita via servidor VPN
 builder.Services.AddScoped<IRouterService>(sp =>
 {
     var routerRepo = sp.GetRequiredService<IRouterRepository>();
     var tenantRepo = sp.GetRequiredService<ITenantRepository>();
-    var routerOsClient = sp.GetRequiredService<IRouterOsClient>();
     var allowedNetworkRepo = sp.GetService<IRouterAllowedNetworkRepository>();
     var wireGuardService = sp.GetService<IRouterWireGuardService>(); // Opcional
-    return new RouterService(routerRepo, tenantRepo, routerOsClient, allowedNetworkRepo, wireGuardService);
+    return new RouterService(routerRepo, tenantRepo, allowedNetworkRepo, wireGuardService);
+});
+
+// Registrar RouterStaticRouteService
+builder.Services.AddScoped<IRouterStaticRouteService>(sp =>
+{
+    var routeRepo = sp.GetRequiredService<IRouterStaticRouteRepository>();
+    var routerRepo = sp.GetRequiredService<IRouterRepository>();
+    var logger = sp.GetService<ILogger<Automais.Core.Services.RouterStaticRouteService>>();
+    return new Automais.Core.Services.RouterStaticRouteService(routeRepo, routerRepo, logger);
 });
 
 builder.Services.AddScoped<IAuthService, Automais.Infrastructure.Services.AuthService>();
@@ -337,22 +347,18 @@ builder.Services.AddSignalR(options =>
 // O monitoramento está sendo feito pelo serviço Python (vpnserver.io)
 
 // RouterBackupService com caminho de storage configurável
+// RouterOsClient removido - comunicação RouterOS agora é feita via servidor VPN
 var backupStoragePath = builder.Configuration["Backup:StoragePath"] ?? "/backups/routers";
 builder.Services.AddScoped<IRouterBackupService>(sp =>
 {
     var backupRepo = sp.GetRequiredService<IRouterBackupRepository>();
     var routerRepo = sp.GetRequiredService<IRouterRepository>();
-    var routerOsClient = sp.GetRequiredService<IRouterOsClient>();
     var tenantUserRepo = sp.GetService<ITenantUserRepository>();
-    return new RouterBackupService(backupRepo, routerRepo, routerOsClient, tenantUserRepo, backupStoragePath);
+    return new RouterBackupService(backupRepo, routerRepo, tenantUserRepo, backupStoragePath);
 });
 
 // External Clients
-builder.Services.AddSingleton<IRouterOsClient>(sp =>
-{
-    var logger = sp.GetService<ILogger<RouterOsClient>>();
-    return new RouterOsClient(logger);
-});
+// IRouterOsClient removido - comunicação RouterOS agora é feita via servidor VPN (Python)
 
 // Controllers com serialização JSON configurada
 builder.Services.AddControllers()

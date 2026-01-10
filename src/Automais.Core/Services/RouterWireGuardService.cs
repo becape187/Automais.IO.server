@@ -147,6 +147,9 @@ public class RouterWireGuardService : IRouterWireGuardService
             UpdatedAt = DateTime.UtcNow
         };
 
+        // Gerar e salvar configuração no banco
+        peer.ConfigContent = GenerateRouterConfig(router, peer, vpnNetwork);
+
         var created = await _peerRepository.CreateAsync(peer, cancellationToken);
         
         _logger?.LogInformation("Peer WireGuard criado no banco: Router={RouterId}, VPN={VpnNetworkId}, IP={RouterIp}", 
@@ -230,12 +233,59 @@ public class RouterWireGuardService : IRouterWireGuardService
             throw new KeyNotFoundException($"Peer WireGuard com ID {id} não encontrado.");
         }
 
-        // Buscar configuração do serviço Python
-        _logger?.LogInformation("Chamando serviço VPN Python para obter config: Router={RouterId}", peer.RouterId);
+        // Se já tem ConfigContent salvo no banco, usar ele (mais rápido)
+        if (!string.IsNullOrWhiteSpace(peer.ConfigContent))
+        {
+            var router = await _routerRepository.GetByIdAsync(peer.RouterId, cancellationToken);
+            var fileName = router != null 
+                ? SanitizeFileName(router.Name) 
+                : $"router_{peer.RouterId}.conf";
+            
+            if (!fileName.EndsWith(".conf", StringComparison.OrdinalIgnoreCase))
+            {
+                fileName = $"{fileName}.conf";
+            }
+
+            return new RouterWireGuardConfigDto
+            {
+                ConfigContent = peer.ConfigContent,
+                FileName = fileName
+            };
+        }
+
+        // Se não tem ConfigContent salvo, gerar agora (para peers antigos)
+        var routerForConfig = await _routerRepository.GetByIdAsync(peer.RouterId, cancellationToken);
+        if (routerForConfig == null)
+        {
+            throw new KeyNotFoundException($"Router com ID {peer.RouterId} não encontrado.");
+        }
+
+        var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(peer.VpnNetworkId, cancellationToken);
+        if (vpnNetwork == null)
+        {
+            throw new KeyNotFoundException($"Rede VPN com ID {peer.VpnNetworkId} não encontrada.");
+        }
+
+        // Gerar configuração diretamente a partir dos dados do peer
+        var configContent = GenerateRouterConfig(routerForConfig, peer, vpnNetwork);
         
-        var config = await _vpnServiceClient.GetConfigAsync(peer.RouterId, cancellationToken);
+        // Salvar no banco para próxima vez
+        peer.ConfigContent = configContent;
+        peer.UpdatedAt = DateTime.UtcNow;
+        await _peerRepository.UpdateAsync(peer, cancellationToken);
         
-        return config;
+        // Nome do arquivo baseado no nome do router
+        var fileNameForConfig = SanitizeFileName(routerForConfig.Name);
+        if (!fileNameForConfig.EndsWith(".conf", StringComparison.OrdinalIgnoreCase))
+        {
+            fileNameForConfig = $"{fileNameForConfig}.conf";
+        }
+
+        return new RouterWireGuardConfigDto
+        {
+            ConfigContent = configContent,
+            FileName = fileNameForConfig
+        };
     }
 
     public async Task<RouterWireGuardPeerDto> RegenerateKeysAsync(Guid id, CancellationToken cancellationToken = default)
@@ -474,6 +524,43 @@ public class RouterWireGuardService : IRouterWireGuardService
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Gera o conteúdo do arquivo de configuração WireGuard (.conf) para o router
+    /// </summary>
+    private static string GenerateRouterConfig(Router router, RouterWireGuardPeer peer, VpnNetwork vpnNetwork)
+    {
+        var configLines = new List<string>
+        {
+            "# Configuração VPN para Router",
+            "",
+            $"# Router: {router.Name}",
+            $"# Gerado em: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC",
+            "",
+            "[Interface]",
+            $"PrivateKey = {peer.PrivateKey}",
+            $"Address = {peer.AllowedIps.Split(',')[0].Trim()}", // Primeiro IP é o do router
+            "",
+            "[Peer]",
+            $"PublicKey = {vpnNetwork.ServerPublicKey ?? ""}",
+            $"Endpoint = {vpnNetwork.ServerEndpoint ?? "automais.io"}:{peer.ListenPort ?? 51820}",
+        };
+
+        // Construir AllowedIPs: CIDR da VPN + redes permitidas adicionais
+        var allowedIpsParts = peer.AllowedIps.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var allowedNetworks = new List<string> { vpnNetwork.Cidr };
+        
+        // Adicionar redes permitidas adicionais (se houver mais de um IP no AllowedIps)
+        if (allowedIpsParts.Length > 1)
+        {
+            allowedNetworks.AddRange(allowedIpsParts.Skip(1));
+        }
+        
+        configLines.Add($"AllowedIPs = {string.Join(", ", allowedNetworks)}");
+        configLines.Add("PersistentKeepalive = 25");
+
+        return string.Join("\n", configLines);
     }
 
     /// <summary>

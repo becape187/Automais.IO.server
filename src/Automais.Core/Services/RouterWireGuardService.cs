@@ -126,9 +126,29 @@ public class RouterWireGuardService : IRouterWireGuardService
         }
 
         // Construir AllowedIps completo (IP do router + redes permitidas)
-        var allowedIpsParts = new List<string> { routerIp };
+        // IMPORTANTE: Garantir que o IP do router use /32 (IP individual)
+        var routerIpNormalized = routerIp;
+        if (IsValidIpWithPrefix(routerIp))
+        {
+            var ipParts = routerIp.Split('/');
+            if (ipParts.Length == 2 && ipParts[1] != "32")
+            {
+                // Se o IP tem prefixo diferente de /32, normalizar para /32
+                routerIpNormalized = $"{ipParts[0]}/32";
+            }
+        }
+        else
+        {
+            // Se não tem prefixo, adicionar /32
+            routerIpNormalized = $"{routerIp}/32";
+        }
+        
+        var allowedIpsParts = new List<string> { routerIpNormalized };
         allowedIpsParts.AddRange(allowedNetworks);
         var allowedIps = string.Join(",", allowedIpsParts);
+        
+        // Normalizar AllowedIps completo (garantir que primeiro IP seja /32)
+        allowedIps = NormalizeAllowedIps(allowedIps);
 
         // Criar peer no banco de dados
         // O serviço Python sincroniza automaticamente a cada minuto e adiciona à interface WireGuard
@@ -166,7 +186,10 @@ public class RouterWireGuardService : IRouterWireGuardService
             throw new KeyNotFoundException($"Peer WireGuard com ID {id} não encontrado.");
         }
 
-        peer.AllowedIps = dto.AllowedIps;
+        // Normalizar AllowedIps para garantir que IPs individuais usem /32
+        var normalizedAllowedIps = NormalizeAllowedIps(dto.AllowedIps);
+        peer.AllowedIps = normalizedAllowedIps;
+        
         // Endpoint não é atualizado aqui - ele vem da VpnNetwork
         peer.ListenPort = dto.ListenPort;
         peer.UpdatedAt = DateTime.UtcNow;
@@ -459,11 +482,47 @@ public class RouterWireGuardService : IRouterWireGuardService
             
             if (!allocatedIpSet.Contains(candidateIp))
             {
-                return $"{candidateIp}/{prefixLength}";
+                // IMPORTANTE: Para IPs individuais, usar /32 (não o prefixo da rede)
+                // O prefixo da rede (/24) é usado apenas para a interface do servidor
+                return $"{candidateIp}/32";
             }
         }
 
         throw new InvalidOperationException($"Não há IPs disponíveis na rede VPN {vpnNetwork.Cidr}");
+    }
+
+    /// <summary>
+    /// Normaliza AllowedIPs para garantir que IPs individuais usem /32.
+    /// O primeiro IP (IP do router) deve sempre ser /32.
+    /// Redes adicionais mantêm seu prefixo original.
+    /// </summary>
+    private static string NormalizeAllowedIps(string? allowedIps)
+    {
+        if (string.IsNullOrWhiteSpace(allowedIps))
+            return allowedIps ?? string.Empty;
+
+        var parts = allowedIps.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+            return allowedIps;
+
+        // Normalizar primeiro IP (IP do router) para /32
+        var firstIp = parts[0];
+        if (IsValidIpWithPrefix(firstIp))
+        {
+            var ipParts = firstIp.Split('/');
+            if (ipParts.Length == 2 && ipParts[1] != "32")
+            {
+                // Se o prefixo não é /32, normalizar para /32
+                parts[0] = $"{ipParts[0]}/32";
+            }
+        }
+        else
+        {
+            // Se não tem prefixo, adicionar /32
+            parts[0] = $"{firstIp}/32";
+        }
+
+        return string.Join(",", parts);
     }
 
     /// <summary>

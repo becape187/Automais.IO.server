@@ -14,5 +14,10 @@ public interface IRouterService
     Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
     Task<RouterDto> TestConnectionAsync(Guid id, CancellationToken cancellationToken = default);
     Task<RouterDto> UpdateSystemInfoAsync(Guid id, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Atualiza a senha do router e marca PasswordChanged como true.
+    /// Usado quando a senha é alterada automaticamente na primeira conexão.
+    /// </summary>
+    Task UpdatePasswordAsync(Guid id, string newPassword, CancellationToken cancellationToken = default);
 }
 

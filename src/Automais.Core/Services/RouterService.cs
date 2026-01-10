@@ -307,7 +307,8 @@ public class RouterService : IRouterService
 
         await _routerRepository.UpdateAsync(router, cancellationToken);
         
-        _logger?.LogInformation("Senha do router {RouterId} atualizada: RouterOsApiPassword=NULL, AutomaisApiPassword=nova senha", id);
+        // TODO: Adicionar logging quando tiver ILogger
+        // Senha do router atualizada: RouterOsApiPassword=NULL, AutomaisApiPassword=nova senha
     }
 }
 

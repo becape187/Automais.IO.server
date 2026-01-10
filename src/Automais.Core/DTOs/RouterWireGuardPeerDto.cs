@@ -15,6 +15,9 @@ public class RouterWireGuardPeerDto
     public DateTime? LastHandshake { get; set; }
     public long? BytesReceived { get; set; }
     public long? BytesSent { get; set; }
+    public bool? PingSuccess { get; set; }
+    public double? PingAvgTimeMs { get; set; }
+    public double? PingPacketLoss { get; set; }
     public bool IsEnabled { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
@@ -38,5 +41,18 @@ public class RouterWireGuardConfigDto
 {
     public string ConfigContent { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// DTO para atualização de estatísticas do peer
+/// </summary>
+public class UpdatePeerStatsDto
+{
+    public DateTime? LastHandshake { get; set; }
+    public long? BytesReceived { get; set; }
+    public long? BytesSent { get; set; }
+    public bool? PingSuccess { get; set; }
+    public double? PingAvgTimeMs { get; set; }
+    public double? PingPacketLoss { get; set; }
 }
 

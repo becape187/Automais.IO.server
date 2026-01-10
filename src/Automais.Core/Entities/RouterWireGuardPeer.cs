@@ -59,6 +59,21 @@ public class RouterWireGuardPeer
     public long? BytesSent { get; set; }
     
     /// <summary>
+    /// Último ping bem-sucedido
+    /// </summary>
+    public bool? PingSuccess { get; set; }
+    
+    /// <summary>
+    /// Latência média do ping em milissegundos
+    /// </summary>
+    public double? PingAvgTimeMs { get; set; }
+    
+    /// <summary>
+    /// Perda de pacotes do ping em porcentagem
+    /// </summary>
+    public double? PingPacketLoss { get; set; }
+    
+    /// <summary>
     /// Peer habilitado
     /// </summary>
     public bool IsEnabled { get; set; } = true;

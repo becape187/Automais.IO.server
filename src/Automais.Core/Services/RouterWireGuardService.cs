@@ -128,6 +128,45 @@ public class RouterWireGuardService : IRouterWireGuardService
         return MapToDto(updated);
     }
 
+    public async Task UpdatePeerStatsAsync(Guid id, UpdatePeerStatsDto dto, CancellationToken cancellationToken = default)
+    {
+        var peer = await _peerRepository.GetByIdAsync(id, cancellationToken);
+        if (peer == null)
+        {
+            throw new KeyNotFoundException($"Peer WireGuard com ID {id} não encontrado.");
+        }
+
+        // Atualizar apenas estatísticas (não configuração)
+        if (dto.LastHandshake.HasValue)
+        {
+            peer.LastHandshake = dto.LastHandshake.Value;
+        }
+        if (dto.BytesReceived.HasValue)
+        {
+            peer.BytesReceived = dto.BytesReceived.Value;
+        }
+        if (dto.BytesSent.HasValue)
+        {
+            peer.BytesSent = dto.BytesSent.Value;
+        }
+        if (dto.PingSuccess.HasValue)
+        {
+            peer.PingSuccess = dto.PingSuccess.Value;
+        }
+        if (dto.PingAvgTimeMs.HasValue)
+        {
+            peer.PingAvgTimeMs = dto.PingAvgTimeMs.Value;
+        }
+        if (dto.PingPacketLoss.HasValue)
+        {
+            peer.PingPacketLoss = dto.PingPacketLoss.Value;
+        }
+        
+        peer.UpdatedAt = DateTime.UtcNow;
+
+        await _peerRepository.UpdateAsync(peer, cancellationToken);
+    }
+
     public async Task DeletePeerAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var peer = await _peerRepository.GetByIdAsync(id, cancellationToken);
@@ -186,6 +225,9 @@ public class RouterWireGuardService : IRouterWireGuardService
             LastHandshake = peer.LastHandshake,
             BytesReceived = peer.BytesReceived,
             BytesSent = peer.BytesSent,
+            PingSuccess = peer.PingSuccess,
+            PingAvgTimeMs = peer.PingAvgTimeMs,
+            PingPacketLoss = peer.PingPacketLoss,
             IsEnabled = peer.IsEnabled,
             CreatedAt = peer.CreatedAt,
             UpdatedAt = peer.UpdatedAt

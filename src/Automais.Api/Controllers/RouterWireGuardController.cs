@@ -205,5 +205,24 @@ public class RouterWireGuardController : ControllerBase
             return NotFound(new { message = ex.Message });
         }
     }
+
+    /// <summary>
+    /// Atualiza estatísticas do peer (handshake, bytes, ping)
+    /// Usado pelo serviço de monitoramento Python
+    /// </summary>
+    [HttpPatch("wireguard/peers/{id:guid}/stats")]
+    public async Task<IActionResult> UpdatePeerStats(Guid id, [FromBody] UpdatePeerStatsDto dto, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _wireGuardService.UpdatePeerStatsAsync(id, dto, cancellationToken);
+            return NoContent();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Peer WireGuard não encontrado para atualizar stats");
+            return NotFound(new { message = ex.Message });
+        }
+    }
 }
 

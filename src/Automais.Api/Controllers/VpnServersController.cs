@@ -14,15 +14,18 @@ public class VpnServersController : ControllerBase
 {
     private readonly IVpnNetworkRepository _vpnNetworkRepository;
     private readonly IRouterRepository _routerRepository;
+    private readonly IRouterWireGuardPeerRepository _peerRepository;
     private readonly ILogger<VpnServersController> _logger;
 
     public VpnServersController(
         IVpnNetworkRepository vpnNetworkRepository,
         IRouterRepository routerRepository,
+        IRouterWireGuardPeerRepository peerRepository,
         ILogger<VpnServersController> logger)
     {
         _vpnNetworkRepository = vpnNetworkRepository;
         _routerRepository = routerRepository;
+        _peerRepository = peerRepository;
         _logger = logger;
     }
 
@@ -63,17 +66,40 @@ public class VpnServersController : ControllerBase
             var vpnNetworkIds = vpnNetworks.Select(v => Guid.Parse(v.id)).ToList();
             var allRouters = await _routerRepository.GetAllAsync(cancellationToken);
             
-            var routers = allRouters
+            var routerList = allRouters
                 .Where(r => r.VpnNetworkId.HasValue && vpnNetworkIds.Contains(r.VpnNetworkId.Value))
-                .Select(r => new
-                {
-                    id = r.Id.ToString(),
-                    name = r.Name,
-                    vpn_network_id = r.VpnNetworkId?.ToString(),
-                    router_os_api_url = r.RouterOsApiUrl,
-                    status = r.Status.ToString()
-                })
                 .ToList();
+            
+            // Buscar peers para cada router
+            var routers = new List<object>();
+            foreach (var router in routerList)
+            {
+                var peers = await _peerRepository.GetByRouterIdAsync(router.Id, cancellationToken);
+                var peersList = peers
+                    .Where(p => p.IsEnabled && !string.IsNullOrEmpty(p.PublicKey) && !string.IsNullOrEmpty(p.AllowedIps))
+                    .Select(p => new
+                    {
+                        id = p.Id.ToString(),
+                        router_id = p.RouterId.ToString(),
+                        vpn_network_id = p.VpnNetworkId.ToString(),
+                        public_key = p.PublicKey,
+                        allowed_ips = p.AllowedIps,
+                        endpoint = p.Endpoint,
+                        listen_port = p.ListenPort,
+                        is_enabled = p.IsEnabled
+                    })
+                    .ToList();
+                
+                routers.Add(new
+                {
+                    id = router.Id.ToString(),
+                    name = router.Name,
+                    vpn_network_id = router.VpnNetworkId?.ToString(),
+                    router_os_api_url = router.RouterOsApiUrl,
+                    status = router.Status.ToString(),
+                    peers = peersList
+                });
+            }
 
             _logger.LogInformation(
                 "Servidor VPN com endpoint '{Endpoint}' gerencia {VpnCount} VPNs e {RouterCount} Routers",

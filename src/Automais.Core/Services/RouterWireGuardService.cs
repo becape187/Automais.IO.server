@@ -590,6 +590,23 @@ public class RouterWireGuardService : IRouterWireGuardService
     /// </summary>
     private static string GenerateRouterConfig(Router router, RouterWireGuardPeer peer, VpnNetwork vpnNetwork)
     {
+        // Extrair IP do router (primeiro elemento do AllowedIps)
+        // IMPORTANTE: No BD o IP está como /32 (para WireGuard Linux funcionar),
+        // mas no arquivo .conf para RouterOS usamos /24 (para importar corretamente)
+        var routerIpWithPrefix = peer.AllowedIps.Split(',')[0].Trim();
+        var routerIp = routerIpWithPrefix;
+        if (routerIpWithPrefix.Contains('/'))
+        {
+            routerIp = routerIpWithPrefix.Split('/')[0];
+        }
+        
+        // Extrair prefixo da rede VPN (ex: 10.222.111.0/24 -> /24)
+        var cidrParts = vpnNetwork.Cidr.Split('/');
+        var networkPrefix = cidrParts.Length == 2 ? cidrParts[1] : "24";
+        
+        // Extrair IP do servidor da rede VPN (primeiro IP da rede + 1)
+        var serverIp = ExtractServerIpFromCidr(vpnNetwork.Cidr);
+        
         var configLines = new List<string>
         {
             "# Configuração VPN para Router",
@@ -599,7 +616,7 @@ public class RouterWireGuardService : IRouterWireGuardService
             "",
             "[Interface]",
             $"PrivateKey = {peer.PrivateKey}",
-            $"Address = {peer.AllowedIps.Split(',')[0].Trim()}", // Primeiro IP é o do router
+            $"Address = {routerIp}/{networkPrefix}", // Usar /24 do CIDR da VPN (não /32 do BD) para RouterOS importar corretamente
             "",
             "[Peer]",
             $"PublicKey = {vpnNetwork.ServerPublicKey ?? ""}",
@@ -620,6 +637,39 @@ public class RouterWireGuardService : IRouterWireGuardService
         configLines.Add("PersistentKeepalive = 25");
 
         return string.Join("\n", configLines);
+    }
+    
+    /// <summary>
+    /// Extrai o IP do servidor a partir do CIDR (primeiro IP da rede + 1)
+    /// Exemplo: 10.222.111.0/24 -> 10.222.111.1
+    /// </summary>
+    private static string ExtractServerIpFromCidr(string cidr)
+    {
+        try
+        {
+            var parts = cidr.Split('/');
+            if (parts.Length != 2)
+                return "10.0.0.1"; // Fallback
+            
+            if (!IPAddress.TryParse(parts[0], out var networkIp))
+                return "10.0.0.1"; // Fallback
+            
+            var networkBytes = networkIp.GetAddressBytes();
+            var networkValue = (uint)(networkBytes[0] << 24 | networkBytes[1] << 16 | networkBytes[2] << 8 | networkBytes[3]);
+            var serverValue = networkValue + 1; // Primeiro IP da rede + 1
+            
+            var serverBytes = new byte[4];
+            serverBytes[0] = (byte)((serverValue >> 24) & 0xFF);
+            serverBytes[1] = (byte)((serverValue >> 16) & 0xFF);
+            serverBytes[2] = (byte)((serverValue >> 8) & 0xFF);
+            serverBytes[3] = (byte)(serverValue & 0xFF);
+            
+            return new IPAddress(serverBytes).ToString();
+        }
+        catch
+        {
+            return "10.0.0.1"; // Fallback
+        }
     }
 
     /// <summary>

@@ -23,9 +23,10 @@ public class EmailService : IEmailService
         _configuration = configuration;
         _logger = logger;
         
-        _smtpHost = _configuration["Email:Smtp:Host"] ?? Environment.GetEnvironmentVariable("SMTP_HOST");
+        // Office365 SMTP Configuration
+        _smtpHost = _configuration["Email:Smtp:Host"] ?? Environment.GetEnvironmentVariable("SMTP_HOST") ?? "smtp.office365.com";
         _smtpPort = int.Parse(_configuration["Email:Smtp:Port"] ?? Environment.GetEnvironmentVariable("SMTP_PORT") ?? "587");
-        _smtpUsername = _configuration["Email:Smtp:Username"] ?? Environment.GetEnvironmentVariable("SMTP_USERNAME");
+        _smtpUsername = _configuration["Email:Smtp:Username"] ?? Environment.GetEnvironmentVariable("SMTP_USERNAME") ?? "noreply@automais.io";
         _smtpPassword = _configuration["Email:Smtp:Password"] ?? Environment.GetEnvironmentVariable("SMTP_PASSWORD");
         _smtpUseSsl = bool.Parse(_configuration["Email:Smtp:UseSsl"] ?? Environment.GetEnvironmentVariable("SMTP_USE_SSL") ?? "true");
         _fromEmail = _configuration["Email:From:Address"] ?? Environment.GetEnvironmentVariable("EMAIL_FROM_ADDRESS") ?? "noreply@automais.io";
@@ -64,7 +65,9 @@ public class EmailService : IEmailService
             using var client = new SmtpClient(_smtpHost, _smtpPort)
             {
                 Credentials = new NetworkCredential(_smtpUsername, _smtpPassword),
-                EnableSsl = _smtpUseSsl
+                EnableSsl = _smtpUseSsl,
+                DeliveryMethod = SmtpDeliveryMethod.Network,
+                UseDefaultCredentials = false
             };
 
             using var message = new MailMessage

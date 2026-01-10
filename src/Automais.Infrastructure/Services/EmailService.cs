@@ -32,7 +32,19 @@ public class EmailService : IEmailService
         var portConfig = _configuration["Email:Smtp:Port"] ?? Environment.GetEnvironmentVariable("SMTP_PORT");
         _smtpPort = portConfig != null ? int.Parse(portConfig) : 587;
         _smtpUsername = _configuration["Email:Smtp:Username"] ?? Environment.GetEnvironmentVariable("SMTP_USERNAME") ?? "noreply@automais.io";
-        _smtpPassword = _configuration["Email:Smtp:Password"] ?? Environment.GetEnvironmentVariable("SMTP_PASSWORD") ?? Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
+        
+        // Ler senha - priorizar variável de ambiente, ignorar se for placeholder do appsettings
+        var passwordFromConfig = _configuration["Email:Smtp:Password"];
+        if (string.IsNullOrWhiteSpace(passwordFromConfig) || passwordFromConfig.StartsWith("${") && passwordFromConfig.EndsWith("}"))
+        {
+            // Se for placeholder ou vazio, ler da variável de ambiente
+            _smtpPassword = Environment.GetEnvironmentVariable("SMTP_PASSWORD") ?? Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
+        }
+        else
+        {
+            _smtpPassword = passwordFromConfig;
+        }
+        
         // Remover espaços em branco da senha (pode ter sido adicionado acidentalmente)
         if (!string.IsNullOrWhiteSpace(_smtpPassword))
         {

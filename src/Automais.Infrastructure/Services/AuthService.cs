@@ -45,9 +45,30 @@ public class AuthService : IAuthService
             throw new UnauthorizedAccessException("Usuário não está ativo");
         }
 
-        // TODO: Implementar verificação de senha quando houver campo de senha
-        // Por enquanto, aceitar qualquer senha se o usuário estiver ativo
-        // Em produção, implementar hash de senha (BCrypt, Argon2, etc.)
+        // Verificar se está usando senha temporária e se ela expirou
+        if (!string.IsNullOrWhiteSpace(user.TemporaryPassword) && user.TemporaryPasswordExpiresAt.HasValue)
+        {
+            if (DateTime.UtcNow > user.TemporaryPasswordExpiresAt.Value)
+            {
+                _logger?.LogWarning("Tentativa de login com senha temporária expirada: {Email}", username);
+                throw new UnauthorizedAccessException("Sua senha temporária expirou. Por favor, solicite uma nova senha.");
+            }
+        }
+
+        // Verificar senha
+        if (string.IsNullOrWhiteSpace(user.PasswordHash))
+        {
+            _logger?.LogWarning("Usuário sem senha configurada: {Email}", username);
+            throw new UnauthorizedAccessException("Credenciais inválidas");
+        }
+
+        // Verificar se a senha fornecida corresponde
+        var providedPasswordHash = HashPassword(password);
+        if (providedPasswordHash != user.PasswordHash)
+        {
+            _logger?.LogWarning("Tentativa de login com senha incorreta: {Email}", username);
+            throw new UnauthorizedAccessException("Credenciais inválidas");
+        }
         
         // Atualizar último login
         user.LastLoginAt = DateTime.UtcNow;
@@ -158,6 +179,13 @@ public class AuthService : IAuthService
         }
 
         return new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
+    }
+
+    private static string HashPassword(string password)
+    {
+        using var sha256 = SHA256.Create();
+        var hashedBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
+        return Convert.ToBase64String(hashedBytes);
     }
 }
 

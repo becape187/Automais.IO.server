@@ -114,23 +114,9 @@ public class EmailService : IEmailService
 
         try
         {
-            // Log detalhado da configuração - DEBUG: mostrando credenciais completas
-            _logger?.LogWarning("=== DEBUG SMTP - Credenciais completas ===");
-            _logger?.LogWarning("Host: {Host}", _smtpHost);
-            _logger?.LogWarning("Port: {Port}", _smtpPort);
-            _logger?.LogWarning("Username: '{Username}' (Length: {UsernameLength})", _smtpUsername, _smtpUsername?.Length ?? 0);
-            _logger?.LogWarning("Password: '{Password}' (Length: {PasswordLength})", _smtpPassword, _smtpPassword?.Length ?? 0);
-            _logger?.LogWarning("From Email: '{FromEmail}'", _fromEmail);
-            _logger?.LogWarning("To Email: '{ToEmail}'", toEmail);
-            
-            // Verificar se a senha tem caracteres não imprimíveis
-            if (!string.IsNullOrWhiteSpace(_smtpPassword))
-            {
-                var hasNonPrintable = _smtpPassword.Any(c => !char.IsLetterOrDigit(c) && !char.IsPunctuation(c) && !char.IsSymbol(c));
-                var hexChars = string.Join(" ", _smtpPassword.Select(c => $"{c}({(int)c:X2})"));
-                _logger?.LogWarning("Senha análise - HasNonPrintable: {HasNonPrintable}, Hex: {HexChars}", hasNonPrintable, hexChars);
-            }
-            _logger?.LogWarning("=== FIM DEBUG SMTP ===");
+            // Log da configuração (sem expor senha)
+            _logger?.LogInformation("Tentando enviar email para {Email} via {Host}:{Port} com usuário {Username}", 
+                toEmail, _smtpHost, _smtpPort, _smtpUsername);
 
             // Usar MailKit que tem melhor suporte para Office365 e STARTTLS
             using var client = new SmtpClient();
@@ -233,6 +219,11 @@ public class EmailService : IEmailService
                                     {temporaryPassword}
                                 </p>
                             </div>
+                            <div style=""margin: 20px 0; padding: 15px; background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;"">
+                                <p style=""margin: 0; color: #856404; font-size: 14px; line-height: 1.6;"">
+                                    <strong>⚠️ Atenção:</strong> Esta senha temporária é válida por <strong>12 horas</strong>. Após esse período, ela não funcionará mais e você precisará solicitar uma nova senha.
+                                </p>
+                            </div>
                             <p style=""margin: 20px 0; color: #666666; font-size: 14px; line-height: 1.6;"">
                                 <strong>Importante:</strong> Por segurança, recomendamos que você altere esta senha no primeiro acesso.
                             </p>
@@ -297,6 +288,11 @@ public class EmailService : IEmailService
                             <div style=""background-color: #f8f9fa; border: 2px solid #667eea; border-radius: 6px; padding: 20px; margin: 20px 0; text-align: center;"">
                                 <p style=""margin: 0; font-size: 24px; font-weight: 600; color: #667eea; font-family: 'Courier New', monospace; letter-spacing: 2px;"">
                                     {temporaryPassword}
+                                </p>
+                            </div>
+                            <div style=""margin: 20px 0; padding: 15px; background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;"">
+                                <p style=""margin: 0; color: #856404; font-size: 14px; line-height: 1.6;"">
+                                    <strong>⚠️ Atenção:</strong> Esta senha temporária é válida por <strong>12 horas</strong>. Após esse período, ela não funcionará mais e você precisará solicitar uma nova senha.
                                 </p>
                             </div>
                             <p style=""margin: 20px 0; color: #666666; font-size: 14px; line-height: 1.6;"">

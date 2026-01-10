@@ -95,7 +95,7 @@ public class TenantUserService : ITenantUserService
             Email = dto.Email,
             PasswordHash = passwordHash,
             TemporaryPassword = temporaryPassword,
-            TemporaryPasswordExpiresAt = DateTime.UtcNow.AddDays(7), // Senha temporária válida por 7 dias
+            TemporaryPasswordExpiresAt = DateTime.UtcNow.AddHours(12), // Senha temporária válida por 12 horas
             Role = dto.Role,
             Status = TenantUserStatus.Invited,
             VpnEnabled = dto.VpnEnabled,
@@ -228,7 +228,7 @@ public class TenantUserService : ITenantUserService
 
         user.PasswordHash = passwordHash;
         user.TemporaryPassword = temporaryPassword;
-        user.TemporaryPasswordExpiresAt = DateTime.UtcNow.AddDays(7);
+        user.TemporaryPasswordExpiresAt = DateTime.UtcNow.AddHours(12); // Senha temporária válida por 12 horas
         user.UpdatedAt = DateTime.UtcNow;
 
         await _userRepository.UpdateAsync(user, cancellationToken);

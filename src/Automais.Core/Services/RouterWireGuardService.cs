@@ -4,20 +4,20 @@ using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace Automais.Core.Services;
 
 /// <summary>
 /// Serviço para gerenciamento de WireGuard dos Routers
+/// Delega operações de WireGuard para o serviço Python via IVpnServiceClient
 /// </summary>
 public class RouterWireGuardService : IRouterWireGuardService
 {
     private readonly IRouterWireGuardPeerRepository _peerRepository;
     private readonly IRouterRepository _routerRepository;
     private readonly IVpnNetworkRepository _vpnNetworkRepository;
-    private readonly IWireGuardServerService? _wireGuardServerService;
+    private readonly IVpnServiceClient _vpnServiceClient;
     private readonly WireGuardSettings _wireGuardSettings;
     private readonly ILogger<RouterWireGuardService>? _logger;
 
@@ -26,14 +26,14 @@ public class RouterWireGuardService : IRouterWireGuardService
         IRouterRepository routerRepository,
         IVpnNetworkRepository vpnNetworkRepository,
         IOptions<WireGuardSettings> wireGuardSettings,
-        IWireGuardServerService? wireGuardServerService = null,
+        IVpnServiceClient vpnServiceClient,
         ILogger<RouterWireGuardService>? logger = null)
     {
         _peerRepository = peerRepository;
         _routerRepository = routerRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
         _wireGuardSettings = wireGuardSettings.Value;
-        _wireGuardServerService = wireGuardServerService;
+        _vpnServiceClient = vpnServiceClient;
         _logger = logger;
     }
 
@@ -70,83 +70,38 @@ public class RouterWireGuardService : IRouterWireGuardService
             throw new InvalidOperationException($"Já existe um peer WireGuard para este router e rede VPN.");
         }
 
-        // Validar e alocar IP (se AllowedIps foi fornecido, validar; senão, alocar automaticamente)
-        string routerIp;
+        // Chamar serviço Python para provisionar peer
+        // O serviço Python gerencia toda a lógica de WireGuard (chaves, IPs, interfaces, etc.)
+        var allowedNetworks = new List<string>();
         if (!string.IsNullOrWhiteSpace(dto.AllowedIps))
         {
-            // IP manual foi especificado - validar
-            if (_wireGuardServerService != null)
-            {
-                // Usar o método de alocação para validar o IP manual
-                routerIp = await _wireGuardServerService.AllocateVpnIpAsync(dto.VpnNetworkId, dto.AllowedIps, cancellationToken);
-            }
-            else
-            {
-                // Se não tiver acesso ao serviço, apenas usar o IP fornecido (sem validação)
-                routerIp = dto.AllowedIps;
-            }
-        }
-        else
-        {
-            // IP não especificado - alocar automaticamente
-            if (_wireGuardServerService != null)
-            {
-                routerIp = await _wireGuardServerService.AllocateVpnIpAsync(dto.VpnNetworkId, null, cancellationToken);
-            }
-            else
-            {
-                throw new InvalidOperationException("Não é possível alocar IP automaticamente. Especifique AllowedIps ou configure IWireGuardServerService.");
-            }
+            // Se AllowedIps foi fornecido, pode conter múltiplas redes separadas por vírgula
+            var networks = dto.AllowedIps.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            allowedNetworks.AddRange(networks.Skip(1)); // Pular o primeiro que é o IP do router
         }
 
-        // Se temos acesso ao WireGuardServerService, usar ProvisionRouterAsync que gera chaves corretas
-        // e adiciona o peer ao servidor WireGuard
-        if (_wireGuardServerService != null)
-        {
-            // Construir allowedNetworks a partir do AllowedIps (se fornecido)
-            var allowedNetworks = new List<string>();
-            if (!string.IsNullOrWhiteSpace(dto.AllowedIps))
-            {
-                // Se AllowedIps foi fornecido, pode conter múltiplas redes separadas por vírgula
-                // Mas o IP do router já está em routerIp, então adicionar apenas se houver outras redes
-                // Por enquanto, apenas usar o IP do router
-            }
-            
-            // Usar ProvisionRouterAsync que gera chaves válidas e adiciona ao servidor
-            return await _wireGuardServerService.ProvisionRouterAsync(
-                routerId,
-                dto.VpnNetworkId,
-                allowedNetworks,
-                routerIp, // IP manual
-                cancellationToken);
-        }
+        _logger?.LogInformation("Chamando serviço VPN Python para provisionar peer: Router={RouterId}, VPN={VpnNetworkId}", 
+            routerId, dto.VpnNetworkId);
 
-        // Fallback: Se não temos WireGuardServerService, gerar chaves mockadas (NÃO RECOMENDADO)
-        // ⚠️ ATENÇÃO: Chaves geradas assim NÃO SÃO VÁLIDAS para WireGuard!
-        // Isso só deve acontecer em ambientes de desenvolvimento/teste
-        _logger?.LogWarning("⚠️ Gerando chaves WireGuard mockadas - NÃO VÁLIDAS para produção! " +
-                           "Configure IWireGuardServerService para gerar chaves válidas.");
-        
-        // Lançar exceção em vez de gerar chaves inválidas
-        throw new InvalidOperationException(
-            "Não é possível criar peer WireGuard sem IWireGuardServerService configurado. " +
-            "As chaves precisam ser geradas usando 'wg genkey' do sistema Linux. " +
-            "Configure o IWireGuardServerService no Program.cs.");
-        
-        var (publicKey, privateKey) = GenerateWireGuardKeys();
+        // Chamar serviço Python
+        var result = await _vpnServiceClient.ProvisionPeerAsync(
+            routerId,
+            dto.VpnNetworkId,
+            allowedNetworks,
+            dto.AllowedIps, // IP manual se fornecido
+            cancellationToken);
 
-        // Criar peer no banco
-        // Nota: Endpoint não é salvo no peer, ele vem da VpnNetwork
+        // Salvar peer no banco de dados
         var peer = new RouterWireGuardPeer
         {
             Id = Guid.NewGuid(),
             RouterId = routerId,
             VpnNetworkId = dto.VpnNetworkId,
-            PublicKey = publicKey,
-            PrivateKey = privateKey, // TODO: Criptografar antes de salvar
-            AllowedIps = routerIp, // Usar IP validado/alocado
-            Endpoint = null, // Endpoint vem da VpnNetwork, não é armazenado no peer
-            ListenPort = dto.ListenPort,
+            PublicKey = result.PublicKey,
+            PrivateKey = result.PrivateKey, // Chave privada gerada pelo serviço Python
+            AllowedIps = result.AllowedIps,
+            Endpoint = null, // Endpoint vem da VpnNetwork
+            ListenPort = dto.ListenPort ?? 51820,
             IsEnabled = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -192,26 +147,12 @@ public class RouterWireGuardService : IRouterWireGuardService
             throw new KeyNotFoundException($"Peer WireGuard com ID {id} não encontrado.");
         }
 
-        var router = await _routerRepository.GetByIdAsync(peer.RouterId, cancellationToken);
-        var vpnNetwork = await _vpnNetworkRepository.GetByIdAsync(peer.VpnNetworkId, cancellationToken);
-
-        if (router == null || vpnNetwork == null)
-        {
-            throw new InvalidOperationException("Router ou rede VPN não encontrados.");
-        }
-
-        // Gerar conteúdo do arquivo .conf
-        var configContent = GenerateWireGuardConfig(peer, router, vpnNetwork);
+        // Buscar configuração do serviço Python
+        _logger?.LogInformation("Chamando serviço VPN Python para obter config: Router={RouterId}", peer.RouterId);
         
-        // Sanitizar o nome do router para o nome do arquivo
-        var sanitizedRouterName = SanitizeFileName(router.Name);
-        var fileName = $"router_{sanitizedRouterName}_{peer.Id}.conf";
-
-        return new RouterWireGuardConfigDto
-        {
-            ConfigContent = configContent,
-            FileName = fileName
-        };
+        var config = await _vpnServiceClient.GetConfigAsync(peer.RouterId, cancellationToken);
+        
+        return config;
     }
 
     public async Task<RouterWireGuardPeerDto> RegenerateKeysAsync(Guid id, CancellationToken cancellationToken = default)
@@ -230,53 +171,6 @@ public class RouterWireGuardService : IRouterWireGuardService
             "Isso garantirá que as chaves sejam geradas corretamente usando 'wg genkey' do sistema Linux.");
     }
 
-    private static (string publicKey, string privateKey) GenerateWireGuardKeys()
-    {
-        // TODO: Implementar geração real de chaves WireGuard usando biblioteca apropriada
-        // Por enquanto retorna chaves mockadas
-        var random = new Random();
-        var bytes = new byte[32];
-        random.NextBytes(bytes);
-        var privateKey = Convert.ToBase64String(bytes);
-        random.NextBytes(bytes);
-        var publicKey = Convert.ToBase64String(bytes);
-        return (publicKey, privateKey);
-    }
-
-    private string GenerateWireGuardConfig(RouterWireGuardPeer peer, Router router, VpnNetwork vpnNetwork)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("[Interface]");
-        sb.AppendLine($"PrivateKey = {peer.PrivateKey}");
-        sb.AppendLine($"Address = {peer.AllowedIps}");
-        sb.AppendLine();
-        sb.AppendLine("[Peer]");
-        sb.AppendLine($"PublicKey = {peer.PublicKey}");
-        
-        // Endpoint sempre vem da VpnNetwork, não do peer
-        var endpoint = GetServerEndpoint(vpnNetwork);
-        sb.AppendLine($"Endpoint = {endpoint}:{peer.ListenPort ?? 51820}");
-        
-        sb.AppendLine($"AllowedIPs = {vpnNetwork.Cidr}");
-        sb.AppendLine("PersistentKeepalive = 25");
-        return sb.ToString();
-    }
-
-    /// <summary>
-    /// Obtém o endpoint do servidor VPN a partir da VpnNetwork.
-    /// O valor sempre deve vir do banco (salvo quando a VPN foi criada/atualizada pelo frontend).
-    /// Se por algum motivo não estiver configurado, usa o valor padrão da configuração como fallback.
-    /// </summary>
-    private string GetServerEndpoint(VpnNetwork vpnNetwork)
-    {
-        if (!string.IsNullOrWhiteSpace(vpnNetwork.ServerEndpoint))
-        {
-            return vpnNetwork.ServerEndpoint;
-        }
-        // Fallback de segurança: se por algum motivo não tiver no banco, usa o valor da configuração
-        // (mas isso não deveria acontecer se o frontend sempre enviar o valor)
-        return _wireGuardSettings.DefaultServerEndpoint;
-    }
 
     private static RouterWireGuardPeerDto MapToDto(RouterWireGuardPeer peer)
     {

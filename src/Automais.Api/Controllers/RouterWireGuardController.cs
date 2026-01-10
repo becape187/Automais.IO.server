@@ -103,12 +103,19 @@ public class RouterWireGuardController : ControllerBase
     [HttpGet("routers/{routerId:guid}/wireguard/config/download")]
     public async Task<IActionResult> DownloadConfig(
         Guid routerId,
-        [FromServices] IWireGuardServerService wireGuardServerService,
         CancellationToken cancellationToken)
     {
         try
         {
-            var config = await wireGuardServerService.GetConfigAsync(routerId, cancellationToken);
+            // Buscar peer do router
+            var peers = await _wireGuardService.GetByRouterIdAsync(routerId, cancellationToken);
+            var peer = peers.FirstOrDefault();
+            if (peer == null)
+            {
+                return NotFound(new { message = $"Router {routerId} não possui peer WireGuard configurado" });
+            }
+            
+            var config = await _wireGuardService.GetConfigAsync(peer.Id, cancellationToken);
             
             if (string.IsNullOrEmpty(config.ConfigContent))
             {

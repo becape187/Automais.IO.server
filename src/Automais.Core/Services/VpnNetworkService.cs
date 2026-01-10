@@ -13,7 +13,7 @@ public class VpnNetworkService : IVpnNetworkService
     private readonly IDeviceRepository _deviceRepository;
     private readonly ITenantUserService _tenantUserService;
     private readonly WireGuardSettings _wireGuardSettings;
-    private readonly IWireGuardServerService? _wireGuardServerService;
+    private readonly IVpnServiceClient? _vpnServiceClient;
 
     public VpnNetworkService(
         ITenantRepository tenantRepository,
@@ -21,14 +21,14 @@ public class VpnNetworkService : IVpnNetworkService
         IDeviceRepository deviceRepository,
         ITenantUserService tenantUserService,
         IOptions<WireGuardSettings> wireGuardSettings,
-        IWireGuardServerService? wireGuardServerService = null)
+        IVpnServiceClient? vpnServiceClient = null)
     {
         _tenantRepository = tenantRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
         _deviceRepository = deviceRepository;
         _tenantUserService = tenantUserService;
         _wireGuardSettings = wireGuardSettings.Value;
-        _wireGuardServerService = wireGuardServerService;
+        _vpnServiceClient = vpnServiceClient;
     }
 
     public async Task<IEnumerable<VpnNetworkDto>> GetByTenantAsync(Guid tenantId, CancellationToken cancellationToken = default)
@@ -85,17 +85,18 @@ public class VpnNetworkService : IVpnNetworkService
 
         var created = await _vpnNetworkRepository.CreateAsync(network, cancellationToken);
         
-        // Garantir que a interface WireGuard seja criada e iniciada
-        if (_wireGuardServerService != null)
+        // Garantir que a interface WireGuard seja criada e iniciada (via serviço Python)
+        // O serviço Python fará isso automaticamente via auto-descoberta
+        if (_vpnServiceClient != null)
         {
             try
             {
-                await _wireGuardServerService.EnsureInterfaceForVpnNetworkAsync(created.Id, cancellationToken);
+                await _vpnServiceClient.EnsureInterfaceAsync(created.Id, cancellationToken);
             }
             catch (Exception ex)
             {
                 // Logar erro mas não falhar criação da VPN
-                // A interface pode ser criada depois manualmente ou na sincronização
+                // A interface pode ser criada depois automaticamente pelo serviço Python
                 // TODO: Adicionar ILogger para logar este erro
             }
         }
@@ -150,19 +151,18 @@ public class VpnNetworkService : IVpnNetworkService
             return;
         }
 
-        // Remover interface WireGuard antes de deletar do banco
-        // Isso faz wg-quick down e remove o arquivo de configuração
-        if (_wireGuardServerService != null)
+        // Remover interface WireGuard antes de deletar do banco (via serviço Python)
+        if (_vpnServiceClient != null)
         {
             try
             {
-                await _wireGuardServerService.RemoveInterfaceForVpnNetworkAsync(id, cancellationToken);
+                await _vpnServiceClient.RemoveInterfaceAsync(id, cancellationToken);
             }
             catch (Exception ex)
             {
                 // Logar erro mas continuar com a deleção do banco
-                // TODO: Adicionar ILogger para logar este erro
                 // A interface pode não existir ou já ter sido removida
+                // TODO: Adicionar ILogger para logar este erro
             }
         }
 

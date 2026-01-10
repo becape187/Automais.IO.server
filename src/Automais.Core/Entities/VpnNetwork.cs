@@ -31,11 +31,19 @@ public class VpnNetwork
     /// Endpoint do servidor VPN (ex: "automais.io"). Se não especificado, usa "automais.io" como padrão.
     /// </summary>
     public string? ServerEndpoint { get; set; }
+    
+    /// <summary>
+    /// ID do servidor VPN físico onde esta rede VPN está hospedada.
+    /// Permite ter múltiplos servidores VPN e distribuir redes entre eles.
+    /// </summary>
+    public Guid? VpnServerId { get; set; }
+    
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 
     // Navigation properties
     public Tenant Tenant { get; set; } = null!;
+    public VpnServer? VpnServer { get; set; }
     public ICollection<VpnNetworkMembership> Memberships { get; set; } = new List<VpnNetworkMembership>();
     public ICollection<Device> Devices { get; set; } = new List<Device>();
 }

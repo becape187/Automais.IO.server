@@ -7,7 +7,6 @@ using Automais.Infrastructure.Data;
 using Automais.Infrastructure.Repositories;
 using Automais.Infrastructure.RouterOS;
 using Automais.Infrastructure.Services;
-using Automais.Infrastructure.WireGuard;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -265,13 +264,34 @@ builder.Services.AddScoped<IGatewayService, GatewayService>();
 builder.Services.AddScoped<ITenantUserService, TenantUserService>();
 builder.Services.AddScoped<IApplicationService, ApplicationService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
-// Configuração do WireGuard
+// Configuração do WireGuard (mantido para compatibilidade, mas não usado mais)
 builder.Services.Configure<WireGuardSettings>(
     builder.Configuration.GetSection("WireGuard"));
 
-builder.Services.AddScoped<IVpnNetworkService, VpnNetworkService>();
+// Configuração do serviço VPN Python
+builder.Services.Configure<Automais.Infrastructure.Services.VpnServiceOptions>(
+    builder.Configuration.GetSection("VpnService"));
+
+// Registrar HttpClient para serviço VPN Python
+builder.Services.AddHttpClient<IVpnServiceClient, Automais.Infrastructure.Services.VpnServiceClient>((sp, client) =>
+{
+    var options = sp.GetRequiredService<IOptions<Automais.Infrastructure.Services.VpnServiceOptions>>().Value;
+    client.BaseAddress = new Uri(options.BaseUrl);
+    client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
+});
+
+builder.Services.AddScoped<IVpnNetworkService>(sp =>
+{
+    var tenantRepo = sp.GetRequiredService<ITenantRepository>();
+    var vpnNetworkRepo = sp.GetRequiredService<IVpnNetworkRepository>();
+    var deviceRepo = sp.GetRequiredService<IDeviceRepository>();
+    var tenantUserService = sp.GetRequiredService<ITenantUserService>();
+    var wireGuardSettings = sp.GetRequiredService<IOptions<WireGuardSettings>>();
+    var vpnServiceClient = sp.GetService<IVpnServiceClient>(); // Opcional
+    return new VpnNetworkService(tenantRepo, vpnNetworkRepo, deviceRepo, tenantUserService, wireGuardSettings, vpnServiceClient);
+});
+
 builder.Services.AddScoped<IRouterService, RouterService>();
-builder.Services.AddScoped<IWireGuardServerService, WireGuardServerService>();
 builder.Services.AddScoped<IAuthService, Automais.Infrastructure.Services.AuthService>();
 builder.Services.AddScoped<IUserVpnService, Automais.Infrastructure.Services.UserVpnService>();
 builder.Services.AddScoped<IRouterWireGuardService>(sp =>
@@ -279,10 +299,10 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
     var peerRepo = sp.GetRequiredService<IRouterWireGuardPeerRepository>();
     var routerRepo = sp.GetRequiredService<IRouterRepository>();
     var vpnNetworkRepo = sp.GetRequiredService<IVpnNetworkRepository>();
-    var wireGuardServerService = sp.GetRequiredService<IWireGuardServerService>();
+    var vpnServiceClient = sp.GetRequiredService<IVpnServiceClient>();
     var wireGuardSettings = sp.GetRequiredService<IOptions<WireGuardSettings>>();
     var logger = sp.GetService<ILogger<Automais.Core.Services.RouterWireGuardService>>();
-    return new Automais.Core.Services.RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, wireGuardServerService, logger);
+    return new Automais.Core.Services.RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, vpnServiceClient, logger);
 });
 
 // SignalR para notificações em tempo real
@@ -297,10 +317,8 @@ builder.Services.AddSignalR(options =>
     jsonOptions.PayloadSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
 });
 
-// Serviço de sincronização do WireGuard (executa na inicialização)
-builder.Services.AddHostedService<WireGuardSyncService>();
-
 // Serviço de monitoramento de status dos roteadores (executa periodicamente)
+// NOTA: WireGuardSyncService foi removido - o serviço Python faz isso automaticamente
 builder.Services.AddHostedService<RouterStatusMonitorService>();
 
 // RouterBackupService com caminho de storage configurável

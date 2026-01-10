@@ -13,20 +13,17 @@ public class RouterService : IRouterService
     private readonly IRouterRepository _routerRepository;
     private readonly ITenantRepository _tenantRepository;
     private readonly IRouterOsClient _routerOsClient;
-    private readonly IWireGuardServerService? _wireGuardServerService;
     private readonly IRouterAllowedNetworkRepository? _allowedNetworkRepository;
 
     public RouterService(
         IRouterRepository routerRepository,
         ITenantRepository tenantRepository,
         IRouterOsClient routerOsClient,
-        IWireGuardServerService? wireGuardServerService = null,
         IRouterAllowedNetworkRepository? allowedNetworkRepository = null)
     {
         _routerRepository = routerRepository;
         _tenantRepository = tenantRepository;
         _routerOsClient = routerOsClient;
-        _wireGuardServerService = wireGuardServerService;
         _allowedNetworkRepository = allowedNetworkRepository;
     }
 
@@ -95,30 +92,10 @@ public class RouterService : IRouterService
         var created = await _routerRepository.CreateAsync(router, cancellationToken);
         
         // Se tem VpnNetworkId, provisionar WireGuard automaticamente (allowedNetworks é opcional)
-        if (dto.VpnNetworkId.HasValue)
-        {
-            try
-            {
-                if (_wireGuardServerService != null)
-                {
-                    // allowedNetworks pode ser null ou vazio - o peer será criado apenas com o IP do router
-                    var allowedNetworks = dto.AllowedNetworks ?? Enumerable.Empty<string>();
-                    await _wireGuardServerService.ProvisionRouterAsync(
-                        created.Id,
-                        dto.VpnNetworkId.Value,
-                        allowedNetworks,
-                        dto.VpnIp, // IP manual opcional
-                        cancellationToken);
-                }
-            }
-            catch (Exception ex)
-            {
-                // Logar erro mas não falhar criação do router
-                // O WireGuard pode ser provisionado depois manualmente
-                // TODO: Adicionar ILogger ao RouterService para logar este erro
-                // Por enquanto, o erro será logado no controller se propagar
-            }
-        }
+        // NOTA: Provisionamento de VPN agora é feito via RouterWireGuardService
+        // que chama o serviço Python. Não fazer aqui automaticamente.
+        // O provisionamento deve ser feito explicitamente via endpoint de criação de peer.
+        // Isso permite mais controle e evita falhas silenciosas.
         
         return await MapToDtoAsync(created, cancellationToken);
     }

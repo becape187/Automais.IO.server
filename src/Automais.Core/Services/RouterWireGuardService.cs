@@ -4,13 +4,17 @@ using Automais.Core.Entities;
 using Automais.Core.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
+using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Automais.Core.Services;
 
 /// <summary>
 /// Serviço para gerenciamento de WireGuard dos Routers
-/// Delega operações de WireGuard para o serviço Python via IVpnServiceClient
+/// Cria peers diretamente no banco de dados. O serviço Python (vpnserver.io) sincroniza
+/// automaticamente a cada minuto e adiciona os peers às interfaces WireGuard.
 /// </summary>
 public class RouterWireGuardService : IRouterWireGuardService
 {
@@ -70,10 +74,15 @@ public class RouterWireGuardService : IRouterWireGuardService
             throw new InvalidOperationException($"Já existe um peer WireGuard para este router e rede VPN.");
         }
 
-        // Chamar serviço Python para provisionar peer
-        // O serviço Python gerencia toda a lógica de WireGuard (chaves, IPs, interfaces, etc.)
+        _logger?.LogInformation("Criando peer WireGuard no banco de dados: Router={RouterId}, VPN={VpnNetworkId}", 
+            routerId, dto.VpnNetworkId);
+
+        // Gerar chaves WireGuard localmente
+        var (publicKey, privateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
+
+        // Alocar IP (manual ou automático)
+        string routerIp;
         var allowedNetworks = new List<string>();
-        string? manualIp = null;
         
         if (!string.IsNullOrWhiteSpace(dto.AllowedIps))
         {
@@ -84,7 +93,19 @@ public class RouterWireGuardService : IRouterWireGuardService
             if (networks.Length > 0)
             {
                 // Primeiro elemento é o IP do router (manual)
-                manualIp = networks[0];
+                routerIp = networks[0];
+                
+                // Validar formato do IP manual
+                if (!IsValidIpWithPrefix(routerIp))
+                {
+                    throw new InvalidOperationException($"IP manual inválido: {routerIp}. Use o formato IP/PREFIX (ex: 10.100.1.50/32)");
+                }
+                
+                // Verificar se IP está na rede VPN
+                if (!IsIpInNetwork(routerIp, vpnNetwork.Cidr))
+                {
+                    throw new InvalidOperationException($"IP {routerIp} não está na rede VPN {vpnNetwork.Cidr}");
+                }
                 
                 // Demais elementos são redes permitidas
                 if (networks.Length > 1)
@@ -92,29 +113,34 @@ public class RouterWireGuardService : IRouterWireGuardService
                     allowedNetworks.AddRange(networks.Skip(1));
                 }
             }
+            else
+            {
+                // Alocar IP automaticamente
+                routerIp = await AllocateNextAvailableIpAsync(vpnNetwork, cancellationToken);
+            }
+        }
+        else
+        {
+            // Alocar IP automaticamente
+            routerIp = await AllocateNextAvailableIpAsync(vpnNetwork, cancellationToken);
         }
 
-        _logger?.LogInformation("Chamando serviço VPN Python para provisionar peer: Router={RouterId}, VPN={VpnNetworkId}", 
-            routerId, dto.VpnNetworkId);
+        // Construir AllowedIps completo (IP do router + redes permitidas)
+        var allowedIpsParts = new List<string> { routerIp };
+        allowedIpsParts.AddRange(allowedNetworks);
+        var allowedIps = string.Join(",", allowedIpsParts);
 
-        // Chamar serviço Python
-        var result = await _vpnServiceClient.ProvisionPeerAsync(
-            routerId,
-            dto.VpnNetworkId,
-            allowedNetworks,
-            manualIp, // IP manual (primeiro elemento do AllowedIps) ou null para alocação automática
-            cancellationToken);
-
-        // Salvar peer no banco de dados
+        // Criar peer no banco de dados
+        // O serviço Python sincroniza automaticamente a cada minuto e adiciona à interface WireGuard
         var peer = new RouterWireGuardPeer
         {
             Id = Guid.NewGuid(),
             RouterId = routerId,
             VpnNetworkId = dto.VpnNetworkId,
-            PublicKey = result.PublicKey,
-            PrivateKey = result.PrivateKey, // Chave privada gerada pelo serviço Python
-            AllowedIps = result.AllowedIps,
-            Endpoint = null, // Endpoint vem da VpnNetwork
+            PublicKey = publicKey,
+            PrivateKey = privateKey,
+            AllowedIps = allowedIps,
+            Endpoint = vpnNetwork.ServerEndpoint, // Endpoint vem da VpnNetwork
             ListenPort = dto.ListenPort ?? 51820,
             IsEnabled = true,
             CreatedAt = DateTime.UtcNow,
@@ -122,6 +148,10 @@ public class RouterWireGuardService : IRouterWireGuardService
         };
 
         var created = await _peerRepository.CreateAsync(peer, cancellationToken);
+        
+        _logger?.LogInformation("Peer WireGuard criado no banco: Router={RouterId}, VPN={VpnNetworkId}, IP={RouterIp}", 
+            routerId, dto.VpnNetworkId, routerIp);
+        
         return MapToDto(created);
     }
 
@@ -246,6 +276,204 @@ public class RouterWireGuardService : IRouterWireGuardService
             CreatedAt = peer.CreatedAt,
             UpdatedAt = peer.UpdatedAt
         };
+    }
+
+    /// <summary>
+    /// Gera chaves WireGuard usando wg genkey e wg pubkey
+    /// </summary>
+    private async Task<(string publicKey, string privateKey)> GenerateWireGuardKeysAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Gerar chave privada
+            var privateKeyProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = "genkey",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            privateKeyProcess.Start();
+            var privateKey = (await privateKeyProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            await privateKeyProcess.WaitForExitAsync(cancellationToken);
+
+            if (privateKeyProcess.ExitCode != 0 || string.IsNullOrEmpty(privateKey))
+            {
+                throw new InvalidOperationException("Erro ao gerar chave privada WireGuard");
+            }
+
+            // Gerar chave pública a partir da privada
+            var publicKeyProcess = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "/usr/bin/wg",
+                    Arguments = "pubkey",
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            publicKeyProcess.Start();
+            await publicKeyProcess.StandardInput.WriteAsync(privateKey);
+            await publicKeyProcess.StandardInput.FlushAsync();
+            publicKeyProcess.StandardInput.Close();
+            
+            var publicKey = (await publicKeyProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            await publicKeyProcess.WaitForExitAsync(cancellationToken);
+
+            if (publicKeyProcess.ExitCode != 0 || string.IsNullOrEmpty(publicKey))
+            {
+                throw new InvalidOperationException("Erro ao gerar chave pública WireGuard");
+            }
+
+            return (publicKey, privateKey);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Erro ao gerar chaves WireGuard");
+            throw new InvalidOperationException($"Erro ao gerar chaves WireGuard: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Aloca o próximo IP disponível na rede VPN
+    /// </summary>
+    private async Task<string> AllocateNextAvailableIpAsync(VpnNetwork vpnNetwork, CancellationToken cancellationToken)
+    {
+        // Parsear CIDR da rede VPN (ex: "10.100.1.0/24")
+        var cidrParts = vpnNetwork.Cidr.Split('/');
+        if (cidrParts.Length != 2)
+        {
+            throw new InvalidOperationException($"CIDR inválido: {vpnNetwork.Cidr}");
+        }
+
+        if (!IPAddress.TryParse(cidrParts[0], out var networkIp))
+        {
+            throw new InvalidOperationException($"IP de rede inválido: {cidrParts[0]}");
+        }
+
+        if (!int.TryParse(cidrParts[1], out var prefixLength) || prefixLength < 0 || prefixLength > 32)
+        {
+            throw new InvalidOperationException($"Prefix length inválido: {cidrParts[1]}");
+        }
+
+        // Buscar IPs já alocados nesta rede VPN
+        var allocatedIps = await _peerRepository.GetAllocatedIpsByNetworkAsync(vpnNetwork.Id, cancellationToken);
+        var allocatedIpSet = new HashSet<string>();
+        
+        foreach (var allocatedIp in allocatedIps)
+        {
+            // Extrair apenas o IP (sem o prefix) do AllowedIps
+            // AllowedIps pode ser "10.100.1.50/32" ou "10.100.1.50/32,10.0.0.0/8"
+            var firstIp = allocatedIp.Split(',')[0].Trim();
+            if (IsValidIpWithPrefix(firstIp))
+            {
+                var ipOnly = firstIp.Split('/')[0];
+                allocatedIpSet.Add(ipOnly);
+            }
+        }
+
+        // Encontrar próximo IP disponível (começando do .2, pois .1 é reservado para o servidor)
+        var networkBytes = networkIp.GetAddressBytes();
+        
+        // Converter IP de rede para inteiro (big-endian)
+        var networkValue = (uint)(networkBytes[0] << 24 | networkBytes[1] << 16 | networkBytes[2] << 8 | networkBytes[3]);
+        var hostBits = 32 - prefixLength;
+        var maxHosts = (uint)Math.Pow(2, hostBits) - 2; // -2 para excluir .0 e broadcast
+        
+        // Limitar busca até 254 para evitar problemas com redes muito grandes
+        var maxSearch = Math.Min(maxHosts, 254u);
+        
+        for (uint hostOffset = 2; hostOffset <= maxSearch; hostOffset++)
+        {
+            var ipValue = networkValue + hostOffset;
+            
+            // Converter de volta para IPAddress (big-endian)
+            var ipBytes = new byte[4];
+            ipBytes[0] = (byte)((ipValue >> 24) & 0xFF);
+            ipBytes[1] = (byte)((ipValue >> 16) & 0xFF);
+            ipBytes[2] = (byte)((ipValue >> 8) & 0xFF);
+            ipBytes[3] = (byte)(ipValue & 0xFF);
+            
+            var candidateIp = new IPAddress(ipBytes).ToString();
+            
+            if (!allocatedIpSet.Contains(candidateIp))
+            {
+                return $"{candidateIp}/{prefixLength}";
+            }
+        }
+
+        throw new InvalidOperationException($"Não há IPs disponíveis na rede VPN {vpnNetwork.Cidr}");
+    }
+
+    /// <summary>
+    /// Valida se o formato do IP está correto (IP/PREFIX)
+    /// </summary>
+    private static bool IsValidIpWithPrefix(string ipWithPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(ipWithPrefix))
+            return false;
+
+        var parts = ipWithPrefix.Split('/');
+        if (parts.Length != 2)
+            return false;
+
+        if (!IPAddress.TryParse(parts[0], out _))
+            return false;
+
+        if (!int.TryParse(parts[1], out var prefix) || prefix < 0 || prefix > 32)
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Verifica se um IP está dentro de uma rede CIDR
+    /// </summary>
+    private static bool IsIpInNetwork(string ipWithPrefix, string networkCidr)
+    {
+        try
+        {
+            var ipParts = ipWithPrefix.Split('/');
+            if (ipParts.Length != 2)
+                return false;
+
+            if (!IPAddress.TryParse(ipParts[0], out var ip))
+                return false;
+
+            var networkParts = networkCidr.Split('/');
+            if (networkParts.Length != 2)
+                return false;
+
+            if (!IPAddress.TryParse(networkParts[0], out var networkIp))
+                return false;
+
+            if (!int.TryParse(networkParts[1], out var prefixLength))
+                return false;
+
+            // Calcular máscara de rede
+            var mask = (uint)(0xFFFFFFFF << (32 - prefixLength));
+            mask = (uint)IPAddress.HostToNetworkOrder((int)mask);
+
+            var ipBytes = BitConverter.ToUInt32(ip.GetAddressBytes(), 0);
+            var networkBytes = BitConverter.ToUInt32(networkIp.GetAddressBytes(), 0);
+
+            return (ipBytes & mask) == (networkBytes & mask);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

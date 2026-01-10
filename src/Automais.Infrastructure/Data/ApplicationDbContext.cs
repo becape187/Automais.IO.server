@@ -18,7 +18,6 @@ public class ApplicationDbContext : DbContext
     public DbSet<TenantUser> TenantUsers => Set<TenantUser>();
     public DbSet<Application> Applications => Set<Application>();
     public DbSet<Device> Devices => Set<Device>();
-    public DbSet<VpnServer> VpnServers => Set<VpnServer>();
     public DbSet<VpnNetwork> VpnNetworks => Set<VpnNetwork>();
     public DbSet<VpnNetworkMembership> VpnNetworkMemberships => Set<VpnNetworkMembership>();
     public DbSet<Router> Routers => Set<Router>();
@@ -233,55 +232,6 @@ public class ApplicationDbContext : DbContext
                 .OnDelete(DeleteBehavior.SetNull);
         });
 
-        // Configuração de VpnServer
-        modelBuilder.Entity<VpnServer>(entity =>
-        {
-            entity.ToTable("vpn_servers");
-
-            entity.HasKey(e => e.Id);
-
-            entity.Property(e => e.Name)
-                .IsRequired()
-                .HasMaxLength(255);
-
-            entity.Property(e => e.ServerName)
-                .IsRequired()
-                .HasMaxLength(100);
-
-            entity.HasIndex(e => e.ServerName)
-                .IsUnique();
-
-            entity.Property(e => e.Host)
-                .IsRequired()
-                .HasMaxLength(255);
-
-            entity.Property(e => e.SshPort)
-                .IsRequired()
-                .HasDefaultValue(22);
-
-            entity.Property(e => e.SshUsername)
-                .HasMaxLength(100);
-
-            entity.Property(e => e.SshPassword)
-                .HasMaxLength(500);
-
-            entity.Property(e => e.SshKeyPath)
-                .HasMaxLength(500);
-
-            entity.Property(e => e.IsActive)
-                .IsRequired()
-                .HasDefaultValue(true);
-
-            entity.Property(e => e.Description)
-                .HasMaxLength(500);
-
-            entity.Property(e => e.Region)
-                .HasMaxLength(50);
-
-            entity.Property(e => e.CreatedAt).IsRequired();
-            entity.Property(e => e.UpdatedAt).IsRequired();
-        });
-
         // Configuração de VpnNetwork
         modelBuilder.Entity<VpnNetwork>(entity =>
         {
@@ -321,11 +271,6 @@ public class ApplicationDbContext : DbContext
                 .WithMany(t => t.VpnNetworks)
                 .HasForeignKey(e => e.TenantId)
                 .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasOne(e => e.VpnServer)
-                .WithMany(s => s.VpnNetworks)
-                .HasForeignKey(e => e.VpnServerId)
-                .OnDelete(DeleteBehavior.SetNull);
         });
 
         // Configuração de VpnNetworkMembership

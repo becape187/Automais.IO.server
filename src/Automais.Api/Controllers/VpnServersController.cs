@@ -28,37 +28,33 @@ public class VpnServersController : ControllerBase
 
     /// <summary>
     /// Endpoint usado pelo serviço VPN Python para descobrir quais recursos ele deve gerenciar.
-    /// O serviço Python consulta este endpoint usando seu VPN_SERVER_NAME (variável de ambiente).
+    /// O serviço Python consulta este endpoint usando seu VPN_SERVER_ENDPOINT (variável de ambiente).
+    /// Busca todas as VpnNetworks que têm o ServerEndpoint correspondente.
     /// </summary>
-    /// <param name="serverName">Nome do servidor VPN (deve corresponder ao VPN_SERVER_NAME do serviço Python)</param>
+    /// <param name="endpoint">Endpoint do servidor VPN (ex: automais.io) - deve corresponder ao ServerEndpoint das VpnNetworks</param>
     /// <returns>Lista de VpnNetworks e Routers que este servidor VPN deve gerenciar</returns>
-    [HttpGet("vpn-servers/{serverName}/resources")]
-    public async Task<ActionResult<object>> GetServerResources(string serverName, CancellationToken cancellationToken = default)
+    [HttpGet("vpn/networks/{endpoint}/resources")]
+    public async Task<ActionResult<object>> GetNetworkResources(string endpoint, CancellationToken cancellationToken = default)
     {
         try
         {
-            _logger.LogInformation("Serviço VPN '{ServerName}' consultando seus recursos", serverName);
+            _logger.LogInformation("Serviço VPN com endpoint '{Endpoint}' consultando seus recursos", endpoint);
 
-            // Buscar todas as VpnNetworks associadas a este servidor VPN
-            // Primeiro, precisamos buscar o VpnServer pelo ServerName
-            // Como não temos VpnServerRepository ainda, vamos buscar via DbContext
-            // Por enquanto, vamos buscar todas as VpnNetworks e filtrar depois
+            // Buscar todas as VpnNetworks que têm este ServerEndpoint
             var allVpnNetworks = await _vpnNetworkRepository.GetAllAsync(cancellationToken);
             
-            // Filtrar VpnNetworks que pertencem a este servidor
-            // Usar VpnServerId e buscar o servidor separadamente se necessário
-            // Por enquanto, vamos usar uma abordagem mais simples: buscar por VpnServerId
-            // TODO: Implementar busca direta quando tiver VpnServerRepository
+            // Filtrar VpnNetworks pelo ServerEndpoint
             var vpnNetworks = allVpnNetworks
-                .Where(vpn => vpn.VpnServerId.HasValue)
-                .ToList()
-                .Where(vpn => vpn.VpnServer?.ServerName == serverName)
+                .Where(vpn => vpn.ServerEndpoint != null && vpn.ServerEndpoint.Equals(endpoint, StringComparison.OrdinalIgnoreCase))
                 .Select(vpn => new
                 {
                     id = vpn.Id.ToString(),
                     name = vpn.Name,
                     cidr = vpn.Cidr,
                     server_endpoint = vpn.ServerEndpoint,
+                    server_private_key = vpn.ServerPrivateKey,
+                    server_public_key = vpn.ServerPublicKey,
+                    dns_servers = vpn.DnsServers,
                     tenant_id = vpn.TenantId.ToString()
                 })
                 .ToList();
@@ -80,12 +76,12 @@ public class VpnServersController : ControllerBase
                 .ToList();
 
             _logger.LogInformation(
-                "Servidor VPN '{ServerName}' gerencia {VpnCount} VPNs e {RouterCount} Routers",
-                serverName, vpnNetworks.Count, routers.Count);
+                "Servidor VPN com endpoint '{Endpoint}' gerencia {VpnCount} VPNs e {RouterCount} Routers",
+                endpoint, vpnNetworks.Count, routers.Count);
 
             return Ok(new
             {
-                server_name = serverName,
+                endpoint = endpoint,
                 vpn_networks = vpnNetworks,
                 routers = routers,
                 timestamp = DateTime.UtcNow
@@ -93,7 +89,7 @@ public class VpnServersController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erro ao consultar recursos do servidor VPN '{ServerName}'", serverName);
+            _logger.LogError(ex, "Erro ao consultar recursos do servidor VPN com endpoint '{Endpoint}'", endpoint);
             return StatusCode(500, new
             {
                 message = "Erro ao consultar recursos do servidor VPN",
@@ -105,32 +101,31 @@ public class VpnServersController : ControllerBase
     /// <summary>
     /// Health check do servidor VPN
     /// </summary>
-    [HttpGet("vpn-servers/{serverName}/health")]
-    public async Task<ActionResult<object>> GetServerHealth(string serverName, CancellationToken cancellationToken = default)
+    [HttpGet("vpn/networks/{endpoint}/health")]
+    public async Task<ActionResult<object>> GetNetworkHealth(string endpoint, CancellationToken cancellationToken = default)
     {
         try
         {
-            // Verificar se o servidor existe
-            // TODO: Quando tiver VpnServerRepository, buscar pelo ServerName
+            // Verificar se existem VpnNetworks com este endpoint
             var allVpnNetworks = await _vpnNetworkRepository.GetAllAsync(cancellationToken);
-            var serverExists = allVpnNetworks.Any(vpn => 
-                vpn.VpnServer != null && vpn.VpnServer.ServerName == serverName);
+            var hasNetworks = allVpnNetworks.Any(vpn => 
+                vpn.ServerEndpoint != null && vpn.ServerEndpoint.Equals(endpoint, StringComparison.OrdinalIgnoreCase));
 
-            if (!serverExists)
+            if (!hasNetworks)
             {
-                return NotFound(new { message = $"Servidor VPN '{serverName}' não encontrado" });
+                return NotFound(new { message = $"Nenhuma VpnNetwork encontrada com endpoint '{endpoint}'" });
             }
 
             return Ok(new
             {
-                server_name = serverName,
+                endpoint = endpoint,
                 status = "active",
                 timestamp = DateTime.UtcNow
             });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erro ao verificar health do servidor VPN '{ServerName}'", serverName);
+            _logger.LogError(ex, "Erro ao verificar health do servidor VPN com endpoint '{Endpoint}'", endpoint);
             return StatusCode(500, new
             {
                 message = "Erro ao verificar health do servidor VPN",

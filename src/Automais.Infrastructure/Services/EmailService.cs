@@ -86,27 +86,25 @@ public class EmailService : IEmailService
 
         try
         {
-            _logger?.LogInformation("Tentando enviar email para {Email} via {Host}:{Port} com usuário {Username} (SSL: {Ssl})", 
-                toEmail, _smtpHost, _smtpPort, _smtpUsername, _smtpUseSsl);
+            // Log detalhado da configuração (sem expor senha)
+            _logger?.LogInformation("Tentando enviar email para {Email} via {Host}:{Port} com usuário {Username} (SSL: {Ssl}, Password Length: {PasswordLength})", 
+                toEmail, _smtpHost, _smtpPort, _smtpUsername, _smtpUseSsl, _smtpPassword?.Length ?? 0);
 
-            // Office365 requer STARTTLS na porta 587
-            // O EnableSsl = true na porta 587 usa STARTTLS automaticamente
+            // Configuração idêntica ao PowerShell Send-MailMessage
+            // -SmtpServer "smtp.office365.com" -Port 587 -UseSsl -Credential $cred
             using var client = new SmtpClient(_smtpHost, _smtpPort)
             {
-                Credentials = new NetworkCredential(_smtpUsername, _smtpPassword),
-                EnableSsl = _smtpUseSsl, // Na porta 587, isso usa STARTTLS
+                EnableSsl = true, // -UseSsl no PowerShell
                 DeliveryMethod = SmtpDeliveryMethod.Network,
-                UseDefaultCredentials = false,
-                Timeout = 30000 // 30 segundos
+                UseDefaultCredentials = false, // Importante: não usar credenciais padrão
+                Timeout = 30000
             };
+            
+            // Configurar credenciais (equivalente ao -Credential $cred no PowerShell)
+            client.Credentials = new NetworkCredential(_smtpUsername, _smtpPassword);
 
-            // Para Office365, garantir que não estamos usando SSL direto na porta 587
-            // O EnableSsl na porta 587 já faz STARTTLS automaticamente
-            if (_smtpPort == 587 && !_smtpUseSsl)
-            {
-                _logger?.LogWarning("Porta 587 requer SSL/STARTTLS. Habilitando SSL.");
-                client.EnableSsl = true;
-            }
+            _logger?.LogDebug("SmtpClient configurado - Host: {Host}, Port: {Port}, EnableSsl: {EnableSsl}, UseDefaultCredentials: {UseDefaultCredentials}, Credentials: {HasCredentials}", 
+                client.Host, client.Port, client.EnableSsl, client.UseDefaultCredentials, client.Credentials != null);
 
             using var message = new MailMessage
             {

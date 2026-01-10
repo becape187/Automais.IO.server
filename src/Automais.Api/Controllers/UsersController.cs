@@ -118,6 +118,26 @@ public class UsersController : ControllerBase
         return NoContent();
     }
 
+    [HttpPost("users/{id:guid}/reset-password")]
+    public async Task<IActionResult> ResetPassword(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _tenantUserService.ResetPasswordAsync(id, cancellationToken);
+            return Ok(new { message = "Senha resetada com sucesso. Um email com a nova senha temporária foi enviado." });
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Usuário não encontrado para reset de senha");
+            return NotFound(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao resetar senha do usuário {UserId}", id);
+            return StatusCode(500, new { message = "Erro interno do servidor ao resetar senha", error = ex.Message });
+        }
+    }
+
     /// <summary>
     /// Obtém todas as rotas disponíveis de todos os routers do tenant
     /// </summary>

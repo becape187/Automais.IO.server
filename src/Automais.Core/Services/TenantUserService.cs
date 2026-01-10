@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Automais.Core.DTOs;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
@@ -9,15 +11,18 @@ public class TenantUserService : ITenantUserService
     private readonly ITenantRepository _tenantRepository;
     private readonly ITenantUserRepository _userRepository;
     private readonly IVpnNetworkRepository _vpnNetworkRepository;
+    private readonly IEmailService? _emailService;
 
     public TenantUserService(
         ITenantRepository tenantRepository,
         ITenantUserRepository userRepository,
-        IVpnNetworkRepository vpnNetworkRepository)
+        IVpnNetworkRepository vpnNetworkRepository,
+        IEmailService? emailService = null)
     {
         _tenantRepository = tenantRepository;
         _userRepository = userRepository;
         _vpnNetworkRepository = vpnNetworkRepository;
+        _emailService = emailService;
     }
 
     public async Task<IEnumerable<TenantUserDto>> GetByTenantAsync(Guid tenantId, CancellationToken cancellationToken = default)
@@ -78,12 +83,19 @@ public class TenantUserService : ITenantUserService
             throw new InvalidOperationException($"E-mail '{dto.Email}' já está em uso para este tenant.");
         }
 
+        // Gerar senha temporária
+        var temporaryPassword = GenerateTemporaryPassword();
+        var passwordHash = HashPassword(temporaryPassword);
+
         var user = new TenantUser
         {
             Id = Guid.NewGuid(),
             TenantId = tenantId,
             Name = dto.Name,
             Email = dto.Email,
+            PasswordHash = passwordHash,
+            TemporaryPassword = temporaryPassword,
+            TemporaryPasswordExpiresAt = DateTime.UtcNow.AddDays(7), // Senha temporária válida por 7 dias
             Role = dto.Role,
             Status = TenantUserStatus.Invited,
             VpnEnabled = dto.VpnEnabled,
@@ -101,6 +113,20 @@ public class TenantUserService : ITenantUserService
             await SetUserNetworksAsync(created, dto.NetworkIds, cancellationToken);
         }
 
+        // Enviar email de boas-vindas
+        if (_emailService != null)
+        {
+            try
+            {
+                await _emailService.SendWelcomeEmailAsync(created.Email, created.Name, temporaryPassword, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Log erro mas não falha a criação do usuário
+                System.Diagnostics.Debug.WriteLine($"Erro ao enviar email de boas-vindas: {ex.Message}");
+            }
+        }
+
         return await BuildDtoAsync(created, cancellationToken);
     }
 
@@ -115,6 +141,17 @@ public class TenantUserService : ITenantUserService
         if (!string.IsNullOrWhiteSpace(dto.Name))
         {
             user.Name = dto.Name;
+        }
+
+        if (!string.IsNullOrWhiteSpace(dto.Email))
+        {
+            // Verificar se o email já está em uso por outro usuário do mesmo tenant
+            if (await _userRepository.EmailExistsAsync(user.TenantId, dto.Email, cancellationToken) && 
+                !string.Equals(user.Email, dto.Email, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"E-mail '{dto.Email}' já está em uso para este tenant.");
+            }
+            user.Email = dto.Email;
         }
 
         if (dto.Role.HasValue)
@@ -175,6 +212,89 @@ public class TenantUserService : ITenantUserService
 
         await _vpnNetworkRepository.RemoveMembershipsByUserIdAsync(id, cancellationToken);
         await _userRepository.DeleteAsync(id, cancellationToken);
+    }
+
+    public async Task ResetPasswordAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var user = await _userRepository.GetByIdAsync(id, cancellationToken);
+        if (user == null)
+        {
+            throw new KeyNotFoundException($"Usuário com ID {id} não encontrado.");
+        }
+
+        // Gerar nova senha temporária
+        var temporaryPassword = GenerateTemporaryPassword();
+        var passwordHash = HashPassword(temporaryPassword);
+
+        user.PasswordHash = passwordHash;
+        user.TemporaryPassword = temporaryPassword;
+        user.TemporaryPasswordExpiresAt = DateTime.UtcNow.AddDays(7);
+        user.UpdatedAt = DateTime.UtcNow;
+
+        await _userRepository.UpdateAsync(user, cancellationToken);
+
+        // Enviar email com nova senha
+        if (_emailService != null)
+        {
+            try
+            {
+                await _emailService.SendPasswordResetEmailAsync(user.Email, user.Name, temporaryPassword, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Log erro mas não falha o reset
+                System.Diagnostics.Debug.WriteLine($"Erro ao enviar email de reset de senha: {ex.Message}");
+                throw new InvalidOperationException("Senha foi resetada, mas houve erro ao enviar o email. Entre em contato com o suporte.", ex);
+            }
+        }
+    }
+
+    private static string GenerateTemporaryPassword()
+    {
+        const string uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        const string lowercase = "abcdefghijklmnopqrstuvwxyz";
+        const string digits = "0123456789";
+        const string special = "!@#$%&*";
+        const string allChars = uppercase + lowercase + digits + special;
+
+        var random = RandomNumberGenerator.Create();
+        var password = new StringBuilder(12);
+
+        // Garantir pelo menos um caractere de cada tipo
+        password.Append(uppercase[GetRandomInt(random, uppercase.Length)]);
+        password.Append(lowercase[GetRandomInt(random, lowercase.Length)]);
+        password.Append(digits[GetRandomInt(random, digits.Length)]);
+        password.Append(special[GetRandomInt(random, special.Length)]);
+
+        // Preencher o resto aleatoriamente
+        for (int i = password.Length; i < 12; i++)
+        {
+            password.Append(allChars[GetRandomInt(random, allChars.Length)]);
+        }
+
+        // Embaralhar os caracteres
+        var chars = password.ToString().ToCharArray();
+        for (int i = chars.Length - 1; i > 0; i--)
+        {
+            int j = GetRandomInt(random, i + 1);
+            (chars[i], chars[j]) = (chars[j], chars[i]);
+        }
+
+        return new string(chars);
+    }
+
+    private static int GetRandomInt(RandomNumberGenerator rng, int max)
+    {
+        var bytes = new byte[4];
+        rng.GetBytes(bytes);
+        return (int)(BitConverter.ToUInt32(bytes, 0) % max);
+    }
+
+    private static string HashPassword(string password)
+    {
+        using var sha256 = SHA256.Create();
+        var hashedBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
+        return Convert.ToBase64String(hashedBytes);
     }
 
     private async Task<TenantUserDto> BuildDtoAsync(TenantUser user, CancellationToken cancellationToken)

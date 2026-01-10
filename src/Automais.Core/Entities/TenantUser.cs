@@ -9,6 +9,9 @@ public class TenantUser
     public Guid TenantId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
+    public string? PasswordHash { get; set; }
+    public string? TemporaryPassword { get; set; }
+    public DateTime? TemporaryPasswordExpiresAt { get; set; }
     public TenantUserRole Role { get; set; } = TenantUserRole.Viewer;
     public TenantUserStatus Status { get; set; } = TenantUserStatus.Invited;
     public DateTime? LastLoginAt { get; set; }

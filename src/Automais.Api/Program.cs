@@ -264,6 +264,7 @@ builder.Services.AddScoped<IRouterBackupRepository, RouterBackupRepository>();
 // Services
 builder.Services.AddScoped<ITenantService, TenantService>();
 builder.Services.AddScoped<IGatewayService, GatewayService>();
+builder.Services.AddScoped<IEmailService, Automais.Infrastructure.Services.EmailService>();
 builder.Services.AddScoped<ITenantUserService, TenantUserService>();
 builder.Services.AddScoped<IApplicationService, ApplicationService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();

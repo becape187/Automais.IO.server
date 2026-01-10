@@ -42,6 +42,7 @@ public class CreateTenantUserDto
 public class UpdateTenantUserDto
 {
     public string? Name { get; set; }
+    public string? Email { get; set; }
     public TenantUserRole? Role { get; set; }
     public TenantUserStatus? Status { get; set; }
     public bool? VpnEnabled { get; set; }

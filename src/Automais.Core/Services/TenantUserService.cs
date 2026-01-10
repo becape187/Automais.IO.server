@@ -254,20 +254,18 @@ public class TenantUserService : ITenantUserService
         const string uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         const string lowercase = "abcdefghijklmnopqrstuvwxyz";
         const string digits = "0123456789";
-        const string special = "!@#$%&*";
-        const string allChars = uppercase + lowercase + digits + special;
+        const string allChars = uppercase + lowercase + digits;
 
         var random = RandomNumberGenerator.Create();
-        var password = new StringBuilder(12);
+        var password = new StringBuilder(6);
 
-        // Garantir pelo menos um caractere de cada tipo
+        // Garantir pelo menos um caractere de cada tipo (maiúscula, minúscula, dígito)
         password.Append(uppercase[GetRandomInt(random, uppercase.Length)]);
         password.Append(lowercase[GetRandomInt(random, lowercase.Length)]);
         password.Append(digits[GetRandomInt(random, digits.Length)]);
-        password.Append(special[GetRandomInt(random, special.Length)]);
 
-        // Preencher o resto aleatoriamente
-        for (int i = password.Length; i < 12; i++)
+        // Preencher os 3 caracteres restantes aleatoriamente
+        for (int i = password.Length; i < 6; i++)
         {
             password.Append(allChars[GetRandomInt(random, allChars.Length)]);
         }

@@ -37,6 +37,13 @@ Environment="EMQX_BROKER_URL=srv01.automais.io"
 Environment="EMQX_USERNAME="
 Environment="EMQX_PASSWORD="
 
+# Variáveis de ambiente do Email (Office365)
+Environment="EMAIL_PASSWORD=NovaSenha2026Io"
+Environment="SMTP_HOST=smtp.office365.com"
+Environment="SMTP_PORT=587"
+Environment="SMTP_USERNAME=noreply@automais.io"
+Environment="SMTP_USE_SSL=true"
+
 [Install]
 WantedBy=multi-user.target
 

@@ -27,10 +27,14 @@ public class EmailService : IEmailService
         _smtpHost = _configuration["Email:Smtp:Host"] ?? Environment.GetEnvironmentVariable("SMTP_HOST") ?? "smtp.office365.com";
         _smtpPort = int.Parse(_configuration["Email:Smtp:Port"] ?? Environment.GetEnvironmentVariable("SMTP_PORT") ?? "587");
         _smtpUsername = _configuration["Email:Smtp:Username"] ?? Environment.GetEnvironmentVariable("SMTP_USERNAME") ?? "noreply@automais.io";
-        _smtpPassword = _configuration["Email:Smtp:Password"] ?? Environment.GetEnvironmentVariable("SMTP_PASSWORD");
+        _smtpPassword = _configuration["Email:Smtp:Password"] ?? Environment.GetEnvironmentVariable("SMTP_PASSWORD") ?? Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
         _smtpUseSsl = bool.Parse(_configuration["Email:Smtp:UseSsl"] ?? Environment.GetEnvironmentVariable("SMTP_USE_SSL") ?? "true");
         _fromEmail = _configuration["Email:From:Address"] ?? Environment.GetEnvironmentVariable("EMAIL_FROM_ADDRESS") ?? "noreply@automais.io";
         _fromName = _configuration["Email:From:Name"] ?? Environment.GetEnvironmentVariable("EMAIL_FROM_NAME") ?? "Automais.IO";
+
+        // Log de configuração (sem expor senha)
+        _logger?.LogInformation("EmailService configurado - Host: {Host}, Port: {Port}, Username: {Username}, Password configurada: {HasPassword}", 
+            _smtpHost, _smtpPort, _smtpUsername, !string.IsNullOrWhiteSpace(_smtpPassword));
     }
 
     public async Task SendWelcomeEmailAsync(string toEmail, string toName, string temporaryPassword, CancellationToken cancellationToken = default)
@@ -62,12 +66,16 @@ public class EmailService : IEmailService
 
         try
         {
+            _logger?.LogInformation("Tentando enviar email para {Email} via {Host}:{Port} com usuário {Username}", 
+                toEmail, _smtpHost, _smtpPort, _smtpUsername);
+
             using var client = new SmtpClient(_smtpHost, _smtpPort)
             {
                 Credentials = new NetworkCredential(_smtpUsername, _smtpPassword),
                 EnableSsl = _smtpUseSsl,
                 DeliveryMethod = SmtpDeliveryMethod.Network,
-                UseDefaultCredentials = false
+                UseDefaultCredentials = false,
+                Timeout = 30000 // 30 segundos
             };
 
             using var message = new MailMessage
@@ -75,13 +83,27 @@ public class EmailService : IEmailService
                 From = new MailAddress(_fromEmail!, _fromName),
                 Subject = subject,
                 Body = htmlBody,
-                IsBodyHtml = true
+                IsBodyHtml = true,
+                Priority = MailPriority.Normal
             };
 
             message.To.Add(new MailAddress(toEmail, toName));
 
             await client.SendMailAsync(message, cancellationToken);
             _logger?.LogInformation("Email enviado com sucesso para {Email}", toEmail);
+        }
+        catch (SmtpException smtpEx)
+        {
+            _logger?.LogError(smtpEx, "Erro SMTP ao enviar email para {Email}. Status: {Status}, Response: {Response}", 
+                toEmail, smtpEx.StatusCode, smtpEx.Message);
+            
+            // Log adicional para debug
+            if (string.IsNullOrWhiteSpace(_smtpPassword))
+            {
+                _logger?.LogError("A senha SMTP está vazia! Verifique a variável de ambiente EMAIL_PASSWORD ou SMTP_PASSWORD");
+            }
+            
+            throw new InvalidOperationException($"Erro ao enviar email: {smtpEx.Message}. Verifique as credenciais SMTP e se a autenticação SMTP está habilitada na conta Office365.", smtpEx);
         }
         catch (Exception ex)
         {

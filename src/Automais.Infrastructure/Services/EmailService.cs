@@ -1,5 +1,7 @@
 using System.Net;
-using System.Net.Mail;
+using MailKit.Net.Smtp;
+using MailKit.Security;
+using MimeKit;
 using Automais.Core.Interfaces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -25,9 +27,16 @@ public class EmailService : IEmailService
         
         // Office365 SMTP Configuration
         _smtpHost = _configuration["Email:Smtp:Host"] ?? Environment.GetEnvironmentVariable("SMTP_HOST") ?? "smtp.office365.com";
-        _smtpPort = int.Parse(_configuration["Email:Smtp:Port"] ?? Environment.GetEnvironmentVariable("SMTP_PORT") ?? "587");
+        // Tentar porta 465 (SSL direto) primeiro, se não funcionar, usar 587 (STARTTLS)
+        var portConfig = _configuration["Email:Smtp:Port"] ?? Environment.GetEnvironmentVariable("SMTP_PORT");
+        _smtpPort = portConfig != null ? int.Parse(portConfig) : 465; // Porta 465 usa SSL direto, mais confiável
         _smtpUsername = _configuration["Email:Smtp:Username"] ?? Environment.GetEnvironmentVariable("SMTP_USERNAME") ?? "noreply@automais.io";
         _smtpPassword = _configuration["Email:Smtp:Password"] ?? Environment.GetEnvironmentVariable("SMTP_PASSWORD") ?? Environment.GetEnvironmentVariable("EMAIL_PASSWORD");
+        // Remover espaços em branco da senha (pode ter sido adicionado acidentalmente)
+        if (!string.IsNullOrWhiteSpace(_smtpPassword))
+        {
+            _smtpPassword = _smtpPassword.Trim();
+        }
         _smtpUseSsl = bool.Parse(_configuration["Email:Smtp:UseSsl"] ?? Environment.GetEnvironmentVariable("SMTP_USE_SSL") ?? "true");
         _fromEmail = _configuration["Email:From:Address"] ?? Environment.GetEnvironmentVariable("EMAIL_FROM_ADDRESS") ?? "noreply@automais.io";
         _fromName = _configuration["Email:From:Name"] ?? Environment.GetEnvironmentVariable("EMAIL_FROM_NAME") ?? "Automais.IO";
@@ -87,65 +96,59 @@ public class EmailService : IEmailService
         try
         {
             // Log detalhado da configuração (sem expor senha)
-            _logger?.LogInformation("Tentando enviar email para {Email} via {Host}:{Port} com usuário {Username} (SSL: {Ssl}, Password Length: {PasswordLength})", 
-                toEmail, _smtpHost, _smtpPort, _smtpUsername, _smtpUseSsl, _smtpPassword?.Length ?? 0);
+            _logger?.LogInformation("Tentando enviar email para {Email} via {Host}:{Port} com usuário {Username} (Password Length: {PasswordLength})", 
+                toEmail, _smtpHost, _smtpPort, _smtpUsername, _smtpPassword?.Length ?? 0);
 
-            // Configuração idêntica ao PowerShell Send-MailMessage
-            // -SmtpServer "smtp.office365.com" -Port 587 -UseSsl -Credential $cred
-            using var client = new SmtpClient(_smtpHost, _smtpPort)
-            {
-                EnableSsl = true, // -UseSsl no PowerShell
-                DeliveryMethod = SmtpDeliveryMethod.Network,
-                UseDefaultCredentials = false, // Importante: não usar credenciais padrão
-                Timeout = 30000
-            };
+            // Usar MailKit que tem melhor suporte para Office365 e STARTTLS
+            using var client = new SmtpClient();
             
-            // Configurar credenciais (equivalente ao -Credential $cred no PowerShell)
-            client.Credentials = new NetworkCredential(_smtpUsername, _smtpPassword);
+            // Conectar ao servidor SMTP com STARTTLS (Office365 requer na porta 587)
+            await client.ConnectAsync(_smtpHost, _smtpPort, SecureSocketOptions.StartTls, cancellationToken);
+            
+            // Autenticar
+            await client.AuthenticateAsync(_smtpUsername, _smtpPassword, cancellationToken);
 
-            _logger?.LogDebug("SmtpClient configurado - Host: {Host}, Port: {Port}, EnableSsl: {EnableSsl}, UseDefaultCredentials: {UseDefaultCredentials}, Credentials: {HasCredentials}", 
-                client.Host, client.Port, client.EnableSsl, client.UseDefaultCredentials, client.Credentials != null);
+            _logger?.LogDebug("Conectado e autenticado no servidor SMTP");
 
-            using var message = new MailMessage
+            // Criar mensagem usando MimeKit
+            var message = new MimeMessage();
+            message.From.Add(new MailboxAddress(_fromName, _fromEmail));
+            message.To.Add(new MailboxAddress(toName, toEmail));
+            message.Subject = subject;
+
+            var bodyBuilder = new BodyBuilder
             {
-                From = new MailAddress(_fromEmail!, _fromName),
-                Subject = subject,
-                Body = htmlBody,
-                IsBodyHtml = true,
-                Priority = MailPriority.Normal
+                HtmlBody = htmlBody
             };
-
-            message.To.Add(new MailAddress(toEmail, toName));
+            message.Body = bodyBuilder.ToMessageBody();
 
             _logger?.LogDebug("Enviando email - De: {From} ({FromName}) Para: {To} ({ToName}), Assunto: {Subject}", 
                 _fromEmail, _fromName, toEmail, toName, subject);
 
-            await client.SendMailAsync(message, cancellationToken);
+            // Enviar email
+            await client.SendAsync(message, cancellationToken);
+            
+            // Desconectar
+            await client.DisconnectAsync(true, cancellationToken);
+            
             _logger?.LogInformation("Email enviado com sucesso para {Email}", toEmail);
         }
-        catch (SmtpException smtpEx)
+        catch (MailKit.Security.AuthenticationException authEx)
         {
-            var errorDetails = new
-            {
-                StatusCode = smtpEx.StatusCode.ToString(),
-                Message = smtpEx.Message,
-                InnerException = smtpEx.InnerException?.Message,
-                StackTrace = smtpEx.StackTrace
-            };
-
-            _logger?.LogError(smtpEx, "Erro SMTP ao enviar email para {Email}. StatusCode: {StatusCode}, Message: {Message}, InnerException: {InnerException}", 
-                toEmail, smtpEx.StatusCode, smtpEx.Message, smtpEx.InnerException?.Message);
+            _logger?.LogError(authEx, "Erro de autenticação SMTP ao enviar email para {Email}. Mensagem: {Message}", 
+                toEmail, authEx.Message);
             
-            _logger?.LogError("Detalhes da configuração SMTP - Host: {Host}, Port: {Port}, Username: {Username}, SSL: {Ssl}, Password Length: {PasswordLength}", 
-                _smtpHost, _smtpPort, _smtpUsername, _smtpUseSsl, _smtpPassword?.Length ?? 0);
+            _logger?.LogError("Detalhes da configuração SMTP - Host: {Host}, Port: {Port}, Username: {Username}, Password Length: {PasswordLength}", 
+                _smtpHost, _smtpPort, _smtpUsername, _smtpPassword?.Length ?? 0);
             
-            var detailedMessage = $"Erro SMTP ({smtpEx.StatusCode}): {smtpEx.Message}";
-            if (smtpEx.InnerException != null)
-            {
-                detailedMessage += $" | Detalhes: {smtpEx.InnerException.Message}";
-            }
+            throw new InvalidOperationException($"Erro de autenticação SMTP: {authEx.Message}. Verifique as credenciais.", authEx);
+        }
+        catch (MailKit.Net.Smtp.SmtpCommandException smtpEx)
+        {
+            _logger?.LogError(smtpEx, "Erro SMTP ao enviar email para {Email}. StatusCode: {StatusCode}, Message: {Message}", 
+                toEmail, smtpEx.StatusCode, smtpEx.Message);
             
-            throw new InvalidOperationException(detailedMessage, smtpEx);
+            throw new InvalidOperationException($"Erro SMTP ({smtpEx.StatusCode}): {smtpEx.Message}", smtpEx);
         }
         catch (Exception ex)
         {

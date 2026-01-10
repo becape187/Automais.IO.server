@@ -73,11 +73,25 @@ public class RouterWireGuardService : IRouterWireGuardService
         // Chamar serviço Python para provisionar peer
         // O serviço Python gerencia toda a lógica de WireGuard (chaves, IPs, interfaces, etc.)
         var allowedNetworks = new List<string>();
+        string? manualIp = null;
+        
         if (!string.IsNullOrWhiteSpace(dto.AllowedIps))
         {
             // Se AllowedIps foi fornecido, pode conter múltiplas redes separadas por vírgula
+            // O primeiro elemento é o IP do router (manual), os demais são redes permitidas
             var networks = dto.AllowedIps.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            allowedNetworks.AddRange(networks.Skip(1)); // Pular o primeiro que é o IP do router
+            
+            if (networks.Length > 0)
+            {
+                // Primeiro elemento é o IP do router (manual)
+                manualIp = networks[0];
+                
+                // Demais elementos são redes permitidas
+                if (networks.Length > 1)
+                {
+                    allowedNetworks.AddRange(networks.Skip(1));
+                }
+            }
         }
 
         _logger?.LogInformation("Chamando serviço VPN Python para provisionar peer: Router={RouterId}, VPN={VpnNetworkId}", 
@@ -88,7 +102,7 @@ public class RouterWireGuardService : IRouterWireGuardService
             routerId,
             dto.VpnNetworkId,
             allowedNetworks,
-            dto.AllowedIps, // IP manual se fornecido
+            manualIp, // IP manual (primeiro elemento do AllowedIps) ou null para alocação automática
             cancellationToken);
 
         // Salvar peer no banco de dados

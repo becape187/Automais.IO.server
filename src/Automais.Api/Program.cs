@@ -295,9 +295,7 @@ builder.Services.AddScoped<IVpnNetworkService>(sp =>
     return new VpnNetworkService(tenantRepo, vpnNetworkRepo, deviceRepo, tenantUserService, wireGuardSettings, vpnServiceClient);
 });
 
-builder.Services.AddScoped<IRouterService, RouterService>();
-builder.Services.AddScoped<IAuthService, Automais.Infrastructure.Services.AuthService>();
-builder.Services.AddScoped<IUserVpnService, Automais.Infrastructure.Services.UserVpnService>();
+// Registrar RouterWireGuardService primeiro para poder injetar no RouterService
 builder.Services.AddScoped<IRouterWireGuardService>(sp =>
 {
     var peerRepo = sp.GetRequiredService<IRouterWireGuardPeerRepository>();
@@ -308,6 +306,20 @@ builder.Services.AddScoped<IRouterWireGuardService>(sp =>
     var logger = sp.GetService<ILogger<Automais.Core.Services.RouterWireGuardService>>();
     return new Automais.Core.Services.RouterWireGuardService(peerRepo, routerRepo, vpnNetworkRepo, wireGuardSettings, vpnServiceClient, logger);
 });
+
+// Registrar RouterService com RouterWireGuardService como dependência opcional
+builder.Services.AddScoped<IRouterService>(sp =>
+{
+    var routerRepo = sp.GetRequiredService<IRouterRepository>();
+    var tenantRepo = sp.GetRequiredService<ITenantRepository>();
+    var routerOsClient = sp.GetRequiredService<IRouterOsClient>();
+    var allowedNetworkRepo = sp.GetService<IRouterAllowedNetworkRepository>();
+    var wireGuardService = sp.GetService<IRouterWireGuardService>(); // Opcional
+    return new RouterService(routerRepo, tenantRepo, routerOsClient, allowedNetworkRepo, wireGuardService);
+});
+
+builder.Services.AddScoped<IAuthService, Automais.Infrastructure.Services.AuthService>();
+builder.Services.AddScoped<IUserVpnService, Automais.Infrastructure.Services.UserVpnService>();
 
 // SignalR para notificações em tempo real
 builder.Services.AddSignalR(options =>
@@ -321,9 +333,8 @@ builder.Services.AddSignalR(options =>
     jsonOptions.PayloadSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
 });
 
-// Serviço de monitoramento de status dos roteadores (executa periodicamente)
-// NOTA: WireGuardSyncService foi removido - o serviço Python faz isso automaticamente
-builder.Services.AddHostedService<RouterStatusMonitorService>();
+// Serviço de monitoramento de status dos roteadores foi removido
+// O monitoramento está sendo feito pelo serviço Python (vpnserver.io)
 
 // RouterBackupService com caminho de storage configurável
 var backupStoragePath = builder.Configuration["Backup:StoragePath"] ?? "/backups/routers";

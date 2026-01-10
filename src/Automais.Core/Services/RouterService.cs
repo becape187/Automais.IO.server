@@ -14,17 +14,20 @@ public class RouterService : IRouterService
     private readonly ITenantRepository _tenantRepository;
     private readonly IRouterOsClient _routerOsClient;
     private readonly IRouterAllowedNetworkRepository? _allowedNetworkRepository;
+    private readonly IRouterWireGuardService? _wireGuardService;
 
     public RouterService(
         IRouterRepository routerRepository,
         ITenantRepository tenantRepository,
         IRouterOsClient routerOsClient,
-        IRouterAllowedNetworkRepository? allowedNetworkRepository = null)
+        IRouterAllowedNetworkRepository? allowedNetworkRepository = null,
+        IRouterWireGuardService? wireGuardService = null)
     {
         _routerRepository = routerRepository;
         _tenantRepository = tenantRepository;
         _routerOsClient = routerOsClient;
         _allowedNetworkRepository = allowedNetworkRepository;
+        _wireGuardService = wireGuardService;
     }
 
     public async Task<IEnumerable<RouterDto>> GetByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default)
@@ -91,11 +94,50 @@ public class RouterService : IRouterService
 
         var created = await _routerRepository.CreateAsync(router, cancellationToken);
         
-        // Se tem VpnNetworkId, provisionar WireGuard automaticamente (allowedNetworks é opcional)
-        // NOTA: Provisionamento de VPN agora é feito via RouterWireGuardService
-        // que chama o serviço Python. Não fazer aqui automaticamente.
-        // O provisionamento deve ser feito explicitamente via endpoint de criação de peer.
-        // Isso permite mais controle e evita falhas silenciosas.
+        // Se tem VpnNetworkId, provisionar WireGuard automaticamente
+        if (created.VpnNetworkId.HasValue && _wireGuardService != null)
+        {
+            try
+            {
+                // Construir AllowedIps: primeiro o IP do router (ou vazio para alocação automática),
+                // depois as redes permitidas separadas por vírgula
+                // O formato esperado é: "IP/PREFIX,rede1,rede2,..." ou apenas "rede1,rede2,..." (para alocação automática)
+                var allowedIpsParts = new List<string>();
+                
+                // Se VpnIp foi fornecido, usar ele como primeiro elemento; caso contrário, deixar vazio para alocação automática
+                if (!string.IsNullOrWhiteSpace(dto.VpnIp))
+                {
+                    allowedIpsParts.Add(dto.VpnIp);
+                }
+                
+                // Adicionar redes permitidas se fornecidas
+                if (dto.AllowedNetworks != null)
+                {
+                    allowedIpsParts.AddRange(dto.AllowedNetworks);
+                }
+                
+                // Se não há IP manual nem redes permitidas, deixar vazio para alocação automática
+                // Caso contrário, juntar tudo com vírgula
+                var allowedIps = allowedIpsParts.Count > 0 ? string.Join(",", allowedIpsParts) : string.Empty;
+                
+                // Criar peer automaticamente
+                var peerDto = new CreateRouterWireGuardPeerDto
+                {
+                    VpnNetworkId = created.VpnNetworkId.Value,
+                    AllowedIps = allowedIps,
+                    ListenPort = 51820 // Porta padrão do WireGuard
+                };
+                
+                await _wireGuardService.CreatePeerAsync(created.Id, peerDto, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Logar erro mas não falhar a criação do router
+                // O peer pode ser criado manualmente depois se necessário
+                // TODO: Adicionar logging quando tiver ILogger
+                // Por enquanto, apenas continua sem criar o peer
+            }
+        }
         
         return await MapToDtoAsync(created, cancellationToken);
     }

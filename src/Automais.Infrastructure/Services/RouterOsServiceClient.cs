@@ -128,7 +128,7 @@ public class RouterOsServiceClient : IRouterOsServiceClient
         return $"http://{serverEndpoint}:8001";
     }
 
-    public async Task<bool> AddRouteAsync(
+    public async Task<(bool Success, string? GatewayUsed)> AddRouteAsync(
         Guid routerId,
         RouterStaticRouteDto route,
         CancellationToken cancellationToken = default)
@@ -147,8 +147,8 @@ public class RouterOsServiceClient : IRouterOsServiceClient
         };
 
         _logger.LogInformation(
-            "Chamando serviço RouterOS para adicionar rota: Router={RouterId}, Route={RouteId}, Destination={Destination}",
-            routerId, route.Id, route.Destination);
+            "Chamando serviço RouterOS para adicionar rota: Router={RouterId}, Route={RouteId}, Destination={Destination}, Gateway={Gateway}",
+            routerId, route.Id, route.Destination, route.Gateway);
 
         try
         {
@@ -165,15 +165,20 @@ public class RouterOsServiceClient : IRouterOsServiceClient
             if (response.IsSuccessStatusCode)
             {
                 var result = await response.Content.ReadFromJsonAsync<RouteOperationResponse>(cancellationToken: cancellationToken);
-                return result?.Success ?? false;
+                if (result?.Success == true)
+                {
+                    // Retornar gateway usado pelo RouterOS (pode ser diferente se gateway estava vazio)
+                    return (true, result.GatewayUsed);
+                }
+                return (false, null);
             }
 
-            return false;
+            return (false, null);
         }
         catch (HttpRequestException ex)
         {
             _logger.LogError(ex, "Erro ao chamar serviço RouterOS para adicionar rota");
-            return false;
+            return (false, null);
         }
     }
 
@@ -281,6 +286,10 @@ public class RouterOsServiceClient : IRouterOsServiceClient
         public bool Success { get; set; }
         public string? Message { get; set; }
         public string? RouterOsId { get; set; }
+        /// <summary>
+        /// Gateway realmente usado pelo RouterOS (pode ser a interface se gateway estava vazio)
+        /// </summary>
+        public string? GatewayUsed { get; set; }
     }
 
     private class WireGuardInterfacesResponse

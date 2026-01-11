@@ -304,15 +304,16 @@ public class RouterStaticRoutesController : ControllerBase
             {
                 try
                 {
-                    var success = await _routerOsServiceClient.AddRouteAsync(routerId, route, cancellationToken);
+                    var (success, gatewayUsed) = await _routerOsServiceClient.AddRouteAsync(routerId, route, cancellationToken);
                     
                     if (success)
                     {
-                        // Atualizar status para Applied
+                        // Atualizar status para Applied, incluindo gateway usado pelo RouterOS
                         await _routeService.UpdateRouteStatusAsync(new UpdateRouteStatusDto
                         {
                             RouteId = route.Id,
-                            Status = RouterStaticRouteStatus.Applied
+                            Status = RouterStaticRouteStatus.Applied,
+                            Gateway = gatewayUsed  // Gateway realmente usado pelo RouterOS (pode ser interface se gateway estava vazio)
                         }, cancellationToken);
 
                         results.Add(new

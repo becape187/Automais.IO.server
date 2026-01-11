@@ -71,5 +71,9 @@ public class UpdateRouteStatusDto
     public RouterStaticRouteStatus Status { get; set; }
     public string? RouterOsId { get; set; }
     public string? ErrorMessage { get; set; }
+    /// <summary>
+    /// Gateway usado na rota (pode ser atualizado pelo RouterOS quando interface é usada como gateway)
+    /// </summary>
+    public string? Gateway { get; set; }
 }
 

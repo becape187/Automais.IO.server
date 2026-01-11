@@ -185,6 +185,13 @@ public class RouterStaticRouteService : IRouterStaticRouteService
         route.Status = dto.Status;
         route.RouterOsId = dto.RouterOsId;
         route.ErrorMessage = dto.ErrorMessage;
+        
+        // Atualizar gateway se fornecido (RouterOS pode ter usado interface como gateway)
+        if (!string.IsNullOrWhiteSpace(dto.Gateway))
+        {
+            route.Gateway = dto.Gateway;
+        }
+        
         route.UpdatedAt = DateTime.UtcNow;
 
         // Se status é Applied, marcar como ativa

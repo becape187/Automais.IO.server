@@ -9,8 +9,10 @@ public interface IRouterOsServiceClient
 {
     /// <summary>
     /// Adiciona rota estática no RouterOS
+    /// Retorna tupla (sucesso, gateway_usado) onde gateway_usado pode ser diferente do fornecido
+    /// se o gateway estava vazio e RouterOS usou a interface como gateway
     /// </summary>
-    Task<bool> AddRouteAsync(
+    Task<(bool Success, string? GatewayUsed)> AddRouteAsync(
         Guid routerId,
         RouterStaticRouteDto route,
         CancellationToken cancellationToken = default);

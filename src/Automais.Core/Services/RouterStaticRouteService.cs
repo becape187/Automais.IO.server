@@ -237,10 +237,8 @@ public class RouterStaticRouteService : IRouterStaticRouteService
             throw new InvalidOperationException("Destination é obrigatório.");
         }
 
-        if (string.IsNullOrWhiteSpace(dto.Gateway))
-        {
-            throw new InvalidOperationException("Gateway é obrigatório.");
-        }
+        // Gateway é opcional - se vazio, RouterOS detectará interface WireGuard automaticamente
+        // Se fornecido, pode ser um IP ou nome de interface
 
         // Validar formato Destination (IP/CIDR)
         if (!IsValidIpOrCidr(dto.Destination))
@@ -248,10 +246,20 @@ public class RouterStaticRouteService : IRouterStaticRouteService
             throw new InvalidOperationException($"Destination inválido: {dto.Destination}. Use formato IP/CIDR (ex: 0.0.0.0/0 ou 10.0.1.0/24).");
         }
 
-        // Validar formato Gateway (IP)
-        if (!IsValidIp(dto.Gateway))
+        // Validar formato Gateway apenas se fornecido
+        // Gateway pode ser um IP ou nome de interface WireGuard
+        if (!string.IsNullOrWhiteSpace(dto.Gateway))
         {
-            throw new InvalidOperationException($"Gateway inválido: {dto.Gateway}. Use formato IP válido (ex: 10.0.0.1).");
+            // Se parece ser um IP (contém apenas números e pontos), validar formato IP
+            if (System.Text.RegularExpressions.Regex.IsMatch(dto.Gateway, @"^\d+\.\d+\.\d+\.\d+$"))
+            {
+                if (!IsValidIp(dto.Gateway))
+                {
+                    throw new InvalidOperationException($"Gateway inválido: {dto.Gateway}. Use formato IP válido (ex: 10.0.0.1).");
+                }
+            }
+            // Se não parece ser um IP, assumir que é nome de interface (não validar formato)
+            // Nomes de interface podem conter letras, números, hífens, underscores, etc.
         }
 
         // Validar Distance se fornecido

@@ -178,6 +178,11 @@ public class RouterStaticRoutesController : ControllerBase
 
     /// <summary>
     /// Deleta uma rota estática
+    /// Fluxo:
+    /// 1. Marca a rota como PendingRemove (não deleta imediatamente)
+    /// 2. Tenta remover do RouterOS
+    /// 3. Se sucesso: deleta do banco
+    /// 4. Se falha: marca como Error e deixa no banco para retry pelo sync periódico
     /// </summary>
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(
@@ -185,7 +190,7 @@ public class RouterStaticRoutesController : ControllerBase
         Guid id,
         CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Deletando rota {RouteId} do router {RouterId}", id, routerId);
+        _logger.LogInformation("Solicitando remoção da rota {RouteId} do router {RouterId}", id, routerId);
 
         try
         {
@@ -201,15 +206,63 @@ public class RouterStaticRoutesController : ControllerBase
                 return BadRequest(new { message = "A rota não pertence a este router" });
             }
 
-            await _routeService.DeleteAsync(id, cancellationToken);
-            return NoContent();
+            // Se não tem RouterOsId, a rota nunca foi aplicada no RouterOS, pode deletar direto
+            if (string.IsNullOrWhiteSpace(existing.RouterOsId))
+            {
+                _logger.LogInformation("Rota {RouteId} nunca foi aplicada no RouterOS, deletando diretamente do banco", id);
+                await _routeService.DeleteAsync(id, cancellationToken);
+                return NoContent();
+            }
+
+            // Marcar como PendingRemove primeiro
+            await _routeService.UpdateRouteStatusAsync(new UpdateRouteStatusDto
+            {
+                RouteId = id,
+                Status = RouterStaticRouteStatus.PendingRemove
+            }, cancellationToken);
+
+            // Tentar remover do RouterOS
+            if (_routerOsServiceClient == null)
+            {
+                _logger.LogWarning("Serviço RouterOS não configurado, rota {RouteId} marcada como PendingRemove para processamento posterior", id);
+                return Accepted(new { message = "Rota marcada para remoção. Será processada pelo serviço RouterOS." });
+            }
+
+            var success = await _routerOsServiceClient.RemoveRouteAsync(routerId, existing.RouterOsId, cancellationToken);
+            
+            if (success)
+            {
+                // Remoção bem-sucedida no RouterOS, deletar do banco
+                _logger.LogInformation("Rota {RouteId} removida com sucesso do RouterOS, deletando do banco", id);
+                await _routeService.DeleteAsync(id, cancellationToken);
+                return NoContent();
+            }
+            else
+            {
+                // Falha ao remover do RouterOS, manter como PendingRemove para retry pelo sync periódico
+                // O sync processará rotas PendingRemove e tentará remover novamente
+                _logger.LogWarning("Falha ao remover rota {RouteId} do RouterOS, mantendo como PendingRemove para retry pelo sync periódico", id);
+                await _routeService.UpdateRouteStatusAsync(new UpdateRouteStatusDto
+                {
+                    RouteId = id,
+                    Status = RouterStaticRouteStatus.PendingRemove,
+                    ErrorMessage = "Falha ao remover rota do RouterOS. Será tentado novamente pelo sync periódico."
+                }, cancellationToken);
+                
+                return Accepted(new 
+                { 
+                    message = "Falha ao remover rota do RouterOS. A rota permanecerá marcada como PendingRemove e será tentada novamente pelo sync periódico.",
+                    routeId = id,
+                    status = "PendingRemove"
+                });
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erro ao deletar rota {RouteId} do router {RouterId}", id, routerId);
+            _logger.LogError(ex, "Erro ao processar remoção da rota {RouteId} do router {RouterId}", id, routerId);
             return StatusCode(500, new 
             { 
-                message = "Erro interno do servidor ao deletar rota",
+                message = "Erro interno do servidor ao processar remoção da rota",
                 detail = ex.Message
             });
         }
@@ -422,12 +475,12 @@ public class RouterStaticRoutesController : ControllerBase
                     }
                     else
                     {
-                        // Marcar como erro
+                        // Falha ao remover, manter como PendingRemove para retry pelo sync periódico
                         await _routeService.UpdateRouteStatusAsync(new UpdateRouteStatusDto
                         {
                             RouteId = route.Id,
-                            Status = RouterStaticRouteStatus.Error,
-                            ErrorMessage = "Falha ao remover rota do RouterOS"
+                            Status = RouterStaticRouteStatus.PendingRemove,
+                            ErrorMessage = "Falha ao remover rota do RouterOS. Será tentado novamente pelo sync periódico."
                         }, cancellationToken);
 
                         results.Add(new
@@ -435,7 +488,7 @@ public class RouterStaticRoutesController : ControllerBase
                             routeId = route.Id,
                             action = "remove",
                             success = false,
-                            error = "Falha ao remover rota do RouterOS"
+                            error = "Falha ao remover rota do RouterOS. Será tentado novamente pelo sync periódico."
                         });
                     }
                 }
@@ -509,6 +562,49 @@ public class RouterStaticRoutesController : ControllerBase
             return StatusCode(500, new 
             { 
                 message = "Erro interno do servidor ao listar interfaces WireGuard",
+                detail = ex.Message
+            });
+        }
+    }
+
+    /// <summary>
+    /// Deleta uma rota do banco de dados diretamente (endpoint interno usado pelo serviço RouterOS)
+    /// Este endpoint é chamado pelo serviço RouterOS após remover a rota com sucesso do RouterOS.
+    /// Não tenta remover do RouterOS novamente, apenas deleta do banco.
+    /// </summary>
+    [HttpDelete("{id:guid}/force")]
+    public async Task<IActionResult> ForceDelete(
+        Guid routerId,
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Deletando rota {RouteId} do banco (chamada interna do RouterOS)", id);
+
+        try
+        {
+            // Verificar se a rota existe e pertence ao router
+            var existing = await _routeService.GetByIdAsync(id, cancellationToken);
+            if (existing == null)
+            {
+                return NotFound(new { message = $"Rota com ID {id} não encontrada" });
+            }
+
+            if (existing.RouterId != routerId)
+            {
+                return BadRequest(new { message = "A rota não pertence a este router" });
+            }
+
+            // Deletar diretamente do banco (já foi removida do RouterOS pelo serviço)
+            await _routeService.DeleteAsync(id, cancellationToken);
+            _logger.LogInformation("Rota {RouteId} deletada do banco com sucesso", id);
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao deletar rota {RouteId} do banco", id);
+            return StatusCode(500, new 
+            { 
+                message = "Erro interno do servidor ao deletar rota",
                 detail = ex.Message
             });
         }

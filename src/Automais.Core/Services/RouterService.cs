@@ -280,6 +280,7 @@ public class RouterService : IRouterService
             FirmwareVersion = router.FirmwareVersion,
             RouterOsApiUrl = router.RouterOsApiUrl,
             RouterOsApiUsername = router.RouterOsApiUsername,
+            RouterOsApiPassword = router.RouterOsApiPassword, // Incluir para o serviço Python usar quando AutomaisApiPassword for null
             AutomaisApiPassword = router.AutomaisApiPassword, // Incluir para o serviço Python verificar
             VpnNetworkId = router.VpnNetworkId,
             VpnNetworkServerEndpoint = vpnNetworkServerEndpoint,

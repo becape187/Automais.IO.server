@@ -16,6 +16,11 @@ public class RouterDto
     public string? RouterOsApiUrl { get; set; }
     public string? RouterOsApiUsername { get; set; }
     /// <summary>
+    /// Senha original do RouterOS (fornecida pelo usuário).
+    /// Usada apenas quando AutomaisApiPassword é null (primeira conexão).
+    /// </summary>
+    public string? RouterOsApiPassword { get; set; }
+    /// <summary>
     /// Senha do usuário automais-io-api (senha forte gerada automaticamente).
     /// Se nulo, significa que ainda não foi alterada e deve usar RouterOsApiPassword.
     /// </summary>

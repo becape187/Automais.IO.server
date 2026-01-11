@@ -20,6 +20,28 @@ public class RoutersController : ControllerBase
         _logger = logger;
     }
 
+    [HttpGet("routers")]
+    public async Task<ActionResult<IEnumerable<RouterDto>>> GetAll(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _logger.LogInformation("Listando todos os routers");
+            var routers = await _routerService.GetAllAsync(cancellationToken);
+            return Ok(routers);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao listar todos os routers");
+            return StatusCode(500, new 
+            { 
+                message = "Erro interno do servidor ao listar routers",
+                detail = ex.Message,
+                innerException = ex.InnerException?.Message,
+                exceptionType = ex.GetType().Name
+            });
+        }
+    }
+
     [HttpGet("tenants/{tenantId:guid}/routers")]
     public async Task<ActionResult<IEnumerable<RouterDto>>> GetByTenant(Guid tenantId, CancellationToken cancellationToken)
     {

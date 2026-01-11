@@ -30,6 +30,24 @@ public class RouterService : IRouterService
         _vpnNetworkRepository = vpnNetworkRepository;
     }
 
+    public async Task<IEnumerable<RouterDto>> GetAllAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var routers = await _routerRepository.GetAllAsync(cancellationToken);
+            var result = new List<RouterDto>();
+            foreach (var router in routers)
+            {
+                result.Add(await MapToDtoAsync(router, cancellationToken));
+            }
+            return result;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Erro ao buscar todos os routers: {ex.Message}", ex);
+        }
+    }
+
     public async Task<IEnumerable<RouterDto>> GetByTenantIdAsync(Guid tenantId, CancellationToken cancellationToken = default)
     {
         try

@@ -667,6 +667,9 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "swagger"; // Swagger em /swagger
 });
 
+// Habilitar WebSocket antes do routing
+app.UseWebSockets();
+
 // Routing deve vir antes dos mapeamentos
 app.UseRouting();
 

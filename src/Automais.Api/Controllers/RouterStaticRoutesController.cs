@@ -14,16 +14,16 @@ namespace Automais.Api.Controllers;
 public class RouterStaticRoutesController : ControllerBase
 {
     private readonly IRouterStaticRouteService _routeService;
-    private readonly IVpnServiceClient? _vpnServiceClient;
+    private readonly IRouterOsServiceClient? _routerOsServiceClient;
     private readonly ILogger<RouterStaticRoutesController> _logger;
 
     public RouterStaticRoutesController(
         IRouterStaticRouteService routeService,
-        IVpnServiceClient? vpnServiceClient,
+        IRouterOsServiceClient? routerOsServiceClient,
         ILogger<RouterStaticRoutesController> logger)
     {
         _routeService = routeService;
-        _vpnServiceClient = vpnServiceClient;
+        _routerOsServiceClient = routerOsServiceClient;
         _logger = logger;
     }
 
@@ -287,9 +287,9 @@ public class RouterStaticRoutesController : ControllerBase
 
         try
         {
-            if (_vpnServiceClient == null)
+            if (_routerOsServiceClient == null)
             {
-                return BadRequest(new { message = "Serviço VPN não configurado" });
+                return BadRequest(new { message = "Serviço RouterOS não configurado" });
             }
 
             // Buscar rotas pendentes
@@ -304,7 +304,7 @@ public class RouterStaticRoutesController : ControllerBase
             {
                 try
                 {
-                    var success = await _vpnServiceClient.AddRouteAsync(routerId, route, cancellationToken);
+                    var success = await _routerOsServiceClient.AddRouteAsync(routerId, route, cancellationToken);
                     
                     if (success)
                     {
@@ -380,7 +380,7 @@ public class RouterStaticRoutesController : ControllerBase
                         continue;
                     }
 
-                    var success = await _vpnServiceClient.RemoveRouteAsync(routerId, route.RouterOsId, cancellationToken);
+                    var success = await _routerOsServiceClient.RemoveRouteAsync(routerId, route.RouterOsId, cancellationToken);
                     
                     if (success)
                     {
@@ -468,12 +468,12 @@ public class RouterStaticRoutesController : ControllerBase
 
         try
         {
-            if (_vpnServiceClient == null)
+            if (_routerOsServiceClient == null)
             {
-                return BadRequest(new { message = "Serviço VPN não configurado" });
+                return BadRequest(new { message = "Serviço RouterOS não configurado" });
             }
 
-            var interfaces = await _vpnServiceClient.ListWireGuardInterfacesAsync(routerId, cancellationToken);
+            var interfaces = await _routerOsServiceClient.ListWireGuardInterfacesAsync(routerId, cancellationToken);
             return Ok(interfaces);
         }
         catch (Exception ex)

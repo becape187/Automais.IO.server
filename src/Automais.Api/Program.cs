@@ -277,6 +277,10 @@ builder.Services.Configure<WireGuardSettings>(
 builder.Services.Configure<Automais.Infrastructure.Services.VpnServiceOptions>(
     builder.Configuration.GetSection("VpnService"));
 
+// Configuração do serviço RouterOS Python
+builder.Services.Configure<Automais.Infrastructure.Services.RouterOsServiceOptions>(
+    builder.Configuration.GetSection("RouterOsService"));
+
 // Configuração do serviço RouterOS WebSocket
 builder.Services.Configure<Automais.Infrastructure.Services.RouterOsWebSocketOptions>(
     builder.Configuration.GetSection("RouterOsWebSocket"));
@@ -297,6 +301,29 @@ builder.Services.AddHttpClient<Automais.Core.Interfaces.IVpnServiceClient, Autom
 {
     // Injetar dependências necessárias para buscar ServerEndpoint dinamicamente
     // Isso é feito via factory pattern no construtor do VpnServiceClient
+});
+
+// Registrar HttpClient para serviço RouterOS Python
+// IMPORTANTE: BaseAddress NÃO é configurado aqui porque as URLs são dinâmicas,
+// baseadas no ServerEndpoint da VpnNetwork de cada router.
+// Cada router pode estar associado a uma VpnNetwork diferente, que por sua vez
+// pode ter um ServerEndpoint diferente, permitindo múltiplos servidores RouterOS.
+builder.Services.AddHttpClient<Automais.Core.Interfaces.IRouterOsServiceClient, Automais.Infrastructure.Services.RouterOsServiceClient>((sp, client) =>
+{
+    var options = sp.GetRequiredService<IOptions<Automais.Infrastructure.Services.RouterOsServiceOptions>>().Value;
+    // NÃO configurar BaseAddress - URLs serão construídas dinamicamente por chamada
+    // baseadas no ServerEndpoint da VpnNetwork
+    client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
+})
+.ConfigureHttpClient((sp, client) =>
+{
+    // Injetar dependências necessárias para buscar ServerEndpoint dinamicamente
+    // Isso é feito via factory pattern no construtor do RouterOsServiceClient
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    // Permitir certificados SSL auto-assinados em desenvolvimento
+    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
 });
 
 // Registrar cliente WebSocket RouterOS

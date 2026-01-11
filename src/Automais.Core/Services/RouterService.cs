@@ -292,8 +292,6 @@ public class RouterService : IRouterService
             CreatedAt = router.CreatedAt,
             UpdatedAt = router.UpdatedAt,
             AllowedNetworks = allowedNetworks
-            // Nota: AutomaisApiPassword não é incluído no DTO por segurança
-            // O serviço Python busca diretamente do banco quando necessário
         };
     }
 

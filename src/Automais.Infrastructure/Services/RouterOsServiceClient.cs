@@ -167,8 +167,12 @@ public class RouterOsServiceClient : IRouterOsServiceClient
                 var result = await response.Content.ReadFromJsonAsync<RouteOperationResponse>(cancellationToken: cancellationToken);
                 if (result?.Success == true)
                 {
-                    // Retornar gateway usado pelo RouterOS (pode ser diferente se gateway estava vazio)
-                    return (true, result.GatewayUsed);
+                    // Retornar gateway usado pelo RouterOS (pode ser IP ou nome de interface quando gateway estava vazio)
+                    var gatewayUsed = result.GatewayUsed ?? string.Empty;
+                    _logger.LogInformation(
+                        "Rota adicionada no RouterOS. Gateway usado: '{GatewayUsed}'", 
+                        gatewayUsed);
+                    return (true, gatewayUsed);
                 }
                 return (false, null);
             }

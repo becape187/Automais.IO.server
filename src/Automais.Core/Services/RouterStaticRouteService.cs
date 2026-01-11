@@ -187,9 +187,10 @@ public class RouterStaticRouteService : IRouterStaticRouteService
         route.ErrorMessage = dto.ErrorMessage;
         
         // Atualizar gateway se fornecido (RouterOS pode ter usado interface como gateway)
-        if (!string.IsNullOrWhiteSpace(dto.Gateway))
+        // Sempre atualizar o gateway quando fornecido, mesmo que seja o nome de uma interface
+        if (dto.Gateway != null)
         {
-            route.Gateway = dto.Gateway;
+            route.Gateway = dto.Gateway; // Pode ser IP ou nome de interface
         }
         
         route.UpdatedAt = DateTime.UtcNow;

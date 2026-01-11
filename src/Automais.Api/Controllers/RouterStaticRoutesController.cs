@@ -309,12 +309,17 @@ public class RouterStaticRoutesController : ControllerBase
                     if (success)
                     {
                         // Atualizar status para Applied, incluindo gateway usado pelo RouterOS
+                        // gatewayUsed pode ser um IP ou o nome da interface WireGuard detectada automaticamente
                         await _routeService.UpdateRouteStatusAsync(new UpdateRouteStatusDto
                         {
                             RouteId = route.Id,
                             Status = RouterStaticRouteStatus.Applied,
-                            Gateway = gatewayUsed  // Gateway realmente usado pelo RouterOS (pode ser interface se gateway estava vazio)
+                            Gateway = gatewayUsed ?? string.Empty  // Gateway realmente usado pelo RouterOS (pode ser interface se gateway estava vazio)
                         }, cancellationToken);
+                        
+                        _logger.LogInformation(
+                            "Rota {RouteId} aplicada com sucesso. Gateway usado: '{GatewayUsed}'", 
+                            route.Id, gatewayUsed ?? "não informado");
 
                         results.Add(new
                         {

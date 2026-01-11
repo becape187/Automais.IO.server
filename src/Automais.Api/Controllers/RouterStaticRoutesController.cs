@@ -251,12 +251,21 @@ public class RouterStaticRoutesController : ControllerBase
         [FromBody] UpdateRouteStatusDto dto,
         CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Atualizando status da rota {RouteId}: Status={Status}", 
-            dto.RouteId, dto.Status);
+        // Log detalhado do POST recebido
+        _logger.LogInformation("📥 POST /api/routers/{RouterId}/routes/update-status recebido:", 
+            dto.RouteId);
+        _logger.LogInformation("   RouteId: {RouteId}", dto.RouteId);
+        _logger.LogInformation("   Status: {Status}", dto.Status);
+        _logger.LogInformation("   RouterOsId: '{RouterOsId}'", dto.RouterOsId ?? "null");
+        _logger.LogInformation("   ErrorMessage: '{ErrorMessage}'", dto.ErrorMessage ?? "null");
+        _logger.LogInformation("   Gateway: '{Gateway}' (tipo: {Type})", 
+            dto.Gateway ?? "null", dto.Gateway?.GetType().Name ?? "null");
 
         try
         {
             await _routeService.UpdateRouteStatusAsync(dto, cancellationToken);
+            _logger.LogInformation("✅ Status da rota {RouteId} atualizado com sucesso. Gateway: '{Gateway}'", 
+                dto.RouteId, dto.Gateway ?? "não informado");
             return Ok(new { message = "Status atualizado com sucesso" });
         }
         catch (KeyNotFoundException ex)
@@ -310,12 +319,24 @@ public class RouterStaticRoutesController : ControllerBase
                     {
                         // Atualizar status para Applied, incluindo gateway usado pelo RouterOS
                         // gatewayUsed pode ser um IP ou o nome da interface WireGuard detectada automaticamente
-                        await _routeService.UpdateRouteStatusAsync(new UpdateRouteStatusDto
+                        // Sempre passar o gateway, mesmo que seja string vazia (para garantir sincronização)
+                        var gatewayToUpdate = gatewayUsed ?? string.Empty;
+                        _logger.LogInformation(
+                            "Atualizando rota {RouteId} com status Applied. Gateway recebido do RouterOS: '{GatewayUsed}' (tipo: {Type}, será passado: '{GatewayToUpdate}')", 
+                            route.Id, gatewayUsed ?? "null", gatewayUsed?.GetType().Name ?? "null", gatewayToUpdate);
+                        
+                        var updateDto = new UpdateRouteStatusDto
                         {
                             RouteId = route.Id,
                             Status = RouterStaticRouteStatus.Applied,
-                            Gateway = gatewayUsed ?? string.Empty  // Gateway realmente usado pelo RouterOS (pode ser interface se gateway estava vazio)
-                        }, cancellationToken);
+                            Gateway = gatewayToUpdate  // Gateway realmente usado pelo RouterOS (pode ser interface se gateway estava vazio)
+                        };
+                        
+                        _logger.LogInformation(
+                            "DTO criado para atualização: RouteId={RouteId}, Status={Status}, Gateway='{Gateway}' (tipo: {Type})", 
+                            updateDto.RouteId, updateDto.Status, updateDto.Gateway ?? "null", updateDto.Gateway?.GetType().Name ?? "null");
+                        
+                        await _routeService.UpdateRouteStatusAsync(updateDto, cancellationToken);
                         
                         _logger.LogInformation(
                             "Rota {RouteId} aplicada com sucesso. Gateway usado: '{GatewayUsed}'", 

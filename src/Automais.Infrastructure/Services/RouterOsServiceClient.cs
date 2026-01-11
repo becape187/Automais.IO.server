@@ -164,16 +164,31 @@ public class RouterOsServiceClient : IRouterOsServiceClient
 
             if (response.IsSuccessStatusCode)
             {
-                var result = await response.Content.ReadFromJsonAsync<RouteOperationResponse>(cancellationToken: cancellationToken);
+                var jsonContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogInformation(
+                    "Resposta do RouterOS (raw): {Response}", 
+                    jsonContent);
+                
+                // Usar JsonSerializerOptions com case insensitive para garantir mapeamento correto
+                // Os atributos JsonPropertyName têm prioridade sobre o PropertyNamingPolicy
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                };
+                
+                var result = await response.Content.ReadFromJsonAsync<RouteOperationResponse>(jsonOptions, cancellationToken);
                 if (result?.Success == true)
                 {
                     // Retornar gateway usado pelo RouterOS (pode ser IP ou nome de interface quando gateway estava vazio)
                     var gatewayUsed = result.GatewayUsed ?? string.Empty;
                     _logger.LogInformation(
-                        "Rota adicionada no RouterOS. Gateway usado: '{GatewayUsed}'", 
-                        gatewayUsed);
+                        "Rota adicionada no RouterOS. Success={Success}, RouterOsId={RouterOsId}, GatewayUsed='{GatewayUsed}' (tipo: {Type})", 
+                        result.Success, result.RouterOsId, gatewayUsed, gatewayUsed?.GetType().Name ?? "null");
                     return (true, gatewayUsed);
                 }
+                _logger.LogWarning(
+                    "Resposta do RouterOS não foi bem-sucedida. Success={Success}", 
+                    result?.Success ?? false);
                 return (false, null);
             }
 
@@ -287,12 +302,19 @@ public class RouterOsServiceClient : IRouterOsServiceClient
     // Classes auxiliares para deserialização
     private class RouteOperationResponse
     {
+        [System.Text.Json.Serialization.JsonPropertyName("success")]
         public bool Success { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("message")]
         public string? Message { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("router_os_id")]
         public string? RouterOsId { get; set; }
+        
         /// <summary>
         /// Gateway realmente usado pelo RouterOS (pode ser a interface se gateway estava vazio)
         /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("gateway_used")]
         public string? GatewayUsed { get; set; }
     }
 

@@ -74,8 +74,6 @@ public class RouterWireGuardService : IRouterWireGuardService
             throw new InvalidOperationException($"Já existe um peer WireGuard para este router e rede VPN.");
         }
 
-        _logger?.LogInformation("Criando peer WireGuard no banco de dados: Router={RouterId}, VPN={VpnNetworkId}", 
-            routerId, dto.VpnNetworkId);
 
         // Gerar chaves WireGuard localmente
         var (publicKey, privateKey) = await GenerateWireGuardKeysAsync(cancellationToken);
@@ -172,8 +170,6 @@ public class RouterWireGuardService : IRouterWireGuardService
 
         var created = await _peerRepository.CreateAsync(peer, cancellationToken);
         
-        _logger?.LogInformation("Peer WireGuard criado no banco: Router={RouterId}, VPN={VpnNetworkId}, IP={RouterIp}", 
-            routerId, dto.VpnNetworkId, routerIp);
         
         return MapToDto(created);
     }

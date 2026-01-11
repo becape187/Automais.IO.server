@@ -78,9 +78,6 @@ public class RouterStaticRouteService : IRouterStaticRouteService
 
         var created = await _routeRepository.CreateAsync(route, cancellationToken);
         
-        _logger?.LogInformation("Rota estática criada: Router={RouterId}, Destination={Destination}, Gateway={Gateway}", 
-            routerId, dto.Destination, dto.Gateway);
-        
         return MapToDto(created);
     }
 
@@ -122,9 +119,6 @@ public class RouterStaticRouteService : IRouterStaticRouteService
 
         var updated = await _routeRepository.UpdateAsync(route, cancellationToken);
         
-        _logger?.LogInformation("Rota estática atualizada: RouteId={RouteId}, Router={RouterId}", 
-            id, route.RouterId);
-        
         return MapToDto(updated);
     }
 
@@ -137,9 +131,6 @@ public class RouterStaticRouteService : IRouterStaticRouteService
         }
 
         await _routeRepository.DeleteAsync(id, cancellationToken);
-        
-        _logger?.LogInformation("Rota estática deletada: RouteId={RouteId}, Router={RouterId}", 
-            id, route.RouterId);
     }
 
     public async Task BatchUpdateStatusAsync(Guid routerId, BatchUpdateRoutesDto dto, CancellationToken cancellationToken = default)
@@ -170,8 +161,6 @@ public class RouterStaticRouteService : IRouterStaticRouteService
             }
         }
 
-        _logger?.LogInformation("Status de rotas atualizado em lote: Router={RouterId}, Add={AddCount}, Remove={RemoveCount}", 
-            routerId, dto.RoutesToAdd.Count(), dto.RoutesToRemove.Count());
     }
 
     public async Task UpdateRouteStatusAsync(UpdateRouteStatusDto dto, CancellationToken cancellationToken = default)
@@ -188,9 +177,17 @@ public class RouterStaticRouteService : IRouterStaticRouteService
         
         // Atualizar gateway se fornecido (RouterOS pode ter usado interface como gateway)
         // Sempre atualizar o gateway quando fornecido, mesmo que seja o nome de uma interface
+        // Aceita tanto string vazia quanto valores não-nulos para garantir sincronização
+        // IMPORTANTE: Atualizar sempre que Gateway não for null, mesmo que seja string vazia
         if (dto.Gateway != null)
         {
             route.Gateway = dto.Gateway; // Pode ser IP ou nome de interface
+        }
+        else
+        {
+            _logger?.LogWarning(
+                "Gateway não foi atualizado: RouteId={RouteId}, Gateway no DTO é null", 
+                dto.RouteId);
         }
         
         route.UpdatedAt = DateTime.UtcNow;
@@ -202,9 +199,6 @@ public class RouterStaticRouteService : IRouterStaticRouteService
         }
 
         await _routeRepository.UpdateAsync(route, cancellationToken);
-        
-        _logger?.LogInformation("Status da rota atualizado: RouteId={RouteId}, Status={Status}", 
-            dto.RouteId, dto.Status);
     }
 
 

@@ -720,55 +720,94 @@ app.Map("/api/ws/routeros/{routerId:guid}", async (HttpContext context, Guid rou
         }
 
         // Construir URL do WebSocket do routeros.io
+        // IMPORTANTE: Se o ServerEndpoint for o mesmo domínio da API, usar localhost
+        // pois o routeros.io Python está rodando no mesmo servidor
+        var requestHost = context.Request.Host.Host;
         var isHttps = context.Request.IsHttps || 
                      context.Request.Headers["X-Forwarded-Proto"].ToString().Equals("https", StringComparison.OrdinalIgnoreCase);
-        var wsProtocol = isHttps ? "wss://" : "ws://";
-
+        
         string wsUrl;
         if (string.IsNullOrWhiteSpace(serverEndpoint))
         {
-            var defaultEndpoint = configuration["RouterOsService:DefaultServerEndpoint"] ?? "localhost";
-            wsUrl = $"{wsProtocol}{defaultEndpoint}:8765";
+            // Se não tem ServerEndpoint, usar localhost (routeros.io está no mesmo servidor)
+            wsUrl = "ws://localhost:8765";
+            logger.LogInformation("ServerEndpoint não configurado, usando localhost:8765");
         }
         else
         {
-            if (serverEndpoint.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
-                serverEndpoint.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            // Extrair apenas o hostname do ServerEndpoint (sem protocolo)
+            string endpointHost = serverEndpoint;
+            if (serverEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
             {
-                if (serverEndpoint.Contains(':', StringComparison.Ordinal) && 
-                    !serverEndpoint.EndsWith("://", StringComparison.OrdinalIgnoreCase))
-                {
-                    wsUrl = serverEndpoint;
-                }
-                else
-                {
-                    wsUrl = $"{serverEndpoint}:8765";
-                }
-            }
-            else if (serverEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-            {
-                var endpointWithoutProtocol = serverEndpoint.Replace("http://", "");
-                wsUrl = $"{wsProtocol}{endpointWithoutProtocol}:8765";
+                endpointHost = serverEndpoint.Replace("http://", "").Split('/')[0].Split(':')[0];
             }
             else if (serverEndpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
-                var endpointWithoutProtocol = serverEndpoint.Replace("https://", "");
-                wsUrl = $"wss://{endpointWithoutProtocol}:8765";
+                endpointHost = serverEndpoint.Replace("https://", "").Split('/')[0].Split(':')[0];
+            }
+            else if (serverEndpoint.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
+                     serverEndpoint.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            {
+                endpointHost = serverEndpoint.Replace("ws://", "").Replace("wss://", "").Split('/')[0].Split(':')[0];
             }
             else
             {
-                wsUrl = $"{wsProtocol}{serverEndpoint}:8765";
+                endpointHost = serverEndpoint.Split('/')[0].Split(':')[0];
+            }
+
+            // Se o ServerEndpoint for o mesmo domínio da requisição, usar localhost
+            // (routeros.io Python está rodando no mesmo servidor)
+            if (endpointHost.Equals(requestHost, StringComparison.OrdinalIgnoreCase) ||
+                endpointHost.Equals("automais.io", StringComparison.OrdinalIgnoreCase) ||
+                endpointHost.Equals("www.automais.io", StringComparison.OrdinalIgnoreCase))
+            {
+                wsUrl = "ws://localhost:8765";
+                logger.LogInformation("ServerEndpoint {ServerEndpoint} é o mesmo domínio da API, usando localhost:8765", serverEndpoint);
+            }
+            else
+            {
+                // ServerEndpoint diferente - conectar diretamente
+                var wsProtocol = isHttps ? "wss://" : "ws://";
+                if (serverEndpoint.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
+                    serverEndpoint.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (serverEndpoint.Contains(':', StringComparison.Ordinal) && 
+                        !serverEndpoint.EndsWith("://", StringComparison.OrdinalIgnoreCase))
+                    {
+                        wsUrl = serverEndpoint;
+                    }
+                    else
+                    {
+                        wsUrl = $"{serverEndpoint}:8765";
+                    }
+                }
+                else if (serverEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                {
+                    var endpointWithoutProtocol = serverEndpoint.Replace("http://", "");
+                    wsUrl = $"{wsProtocol}{endpointWithoutProtocol}:8765";
+                }
+                else if (serverEndpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    var endpointWithoutProtocol = serverEndpoint.Replace("https://", "");
+                    wsUrl = $"wss://{endpointWithoutProtocol}:8765";
+                }
+                else
+                {
+                    wsUrl = $"{wsProtocol}{serverEndpoint}:8765";
+                }
             }
         }
 
-        logger.LogInformation("Conectando ao routeros.io em {WsUrl} para router {RouterId}", wsUrl, routerId);
+        logger.LogInformation("Conectando ao routeros.io em {WsUrl} para router {RouterId} (ServerEndpoint: {ServerEndpoint})", 
+            wsUrl, routerId, serverEndpoint ?? "null");
 
         // Conectar ao servidor routeros.io Python
         var clientWebSocket = new System.Net.WebSockets.ClientWebSocket();
         try
         {
+            logger.LogInformation("Tentando estabelecer conexão WebSocket com {WsUrl}...", wsUrl);
             await clientWebSocket.ConnectAsync(new Uri(wsUrl), context.RequestAborted);
-            logger.LogInformation("Conectado ao routeros.io com sucesso para router {RouterId}", routerId);
+            logger.LogInformation("✅ Conectado ao routeros.io com sucesso para router {RouterId}", routerId);
 
             // Fazer proxy bidirecional
             var cancellationToken = context.RequestAborted;

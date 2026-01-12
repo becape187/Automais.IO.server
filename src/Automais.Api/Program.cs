@@ -13,7 +13,10 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using System.Net;
+using System.Net.WebSockets;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -681,6 +684,143 @@ app.UseCors("AllowFrontend");
 // O endpoint de negociação do SignalR precisa ser acessível sem autenticação
 app.MapHub<Automais.Core.Hubs.RouterStatusHub>("/hubs/router-status");
 
+// Mapear WebSocket endpoint para proxy RouterOS (ANTES de UseAuthorization)
+app.Map("/api/ws/routeros/{routerId:guid}", async (HttpContext context, Guid routerId) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsync("Expected WebSocket request");
+        return;
+    }
+
+    var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+    logger.LogInformation("WebSocket conectado para router {RouterId}", routerId);
+
+    try
+    {
+        var routerRepository = context.RequestServices.GetRequiredService<Automais.Core.Interfaces.IRouterRepository>();
+        var vpnNetworkRepository = context.RequestServices.GetRequiredService<Automais.Core.Interfaces.IVpnNetworkRepository>();
+        var configuration = context.RequestServices.GetRequiredService<IConfiguration>();
+
+        // Buscar router e obter ServerEndpoint
+        var router = await routerRepository.GetByIdAsync(routerId, context.RequestAborted);
+        if (router == null)
+        {
+            await SendWebSocketErrorAndClose(webSocket, "Router não encontrado", logger);
+            return;
+        }
+
+        string? serverEndpoint = null;
+        if (router.VpnNetworkId.HasValue)
+        {
+            var vpnNetwork = await vpnNetworkRepository.GetByIdAsync(router.VpnNetworkId.Value, context.RequestAborted);
+            serverEndpoint = vpnNetwork?.ServerEndpoint;
+        }
+
+        // Construir URL do WebSocket do routeros.io
+        var isHttps = context.Request.IsHttps || 
+                     context.Request.Headers["X-Forwarded-Proto"].ToString().Equals("https", StringComparison.OrdinalIgnoreCase);
+        var wsProtocol = isHttps ? "wss://" : "ws://";
+
+        string wsUrl;
+        if (string.IsNullOrWhiteSpace(serverEndpoint))
+        {
+            var defaultEndpoint = configuration["RouterOsService:DefaultServerEndpoint"] ?? "localhost";
+            wsUrl = $"{wsProtocol}{defaultEndpoint}:8765";
+        }
+        else
+        {
+            if (serverEndpoint.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
+                serverEndpoint.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            {
+                if (serverEndpoint.Contains(':', StringComparison.Ordinal) && 
+                    !serverEndpoint.EndsWith("://", StringComparison.OrdinalIgnoreCase))
+                {
+                    wsUrl = serverEndpoint;
+                }
+                else
+                {
+                    wsUrl = $"{serverEndpoint}:8765";
+                }
+            }
+            else if (serverEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            {
+                var endpointWithoutProtocol = serverEndpoint.Replace("http://", "");
+                wsUrl = $"{wsProtocol}{endpointWithoutProtocol}:8765";
+            }
+            else if (serverEndpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                var endpointWithoutProtocol = serverEndpoint.Replace("https://", "");
+                wsUrl = $"wss://{endpointWithoutProtocol}:8765";
+            }
+            else
+            {
+                wsUrl = $"{wsProtocol}{serverEndpoint}:8765";
+            }
+        }
+
+        logger.LogInformation("Conectando ao routeros.io em {WsUrl} para router {RouterId}", wsUrl, routerId);
+
+        // Conectar ao servidor routeros.io Python
+        var clientWebSocket = new System.Net.WebSockets.ClientWebSocket();
+        try
+        {
+            await clientWebSocket.ConnectAsync(new Uri(wsUrl), context.RequestAborted);
+            logger.LogInformation("Conectado ao routeros.io com sucesso para router {RouterId}", routerId);
+
+            // Fazer proxy bidirecional
+            var cancellationToken = context.RequestAborted;
+            var clientToServer = ProxyWebSocketMessages(webSocket, clientWebSocket, cancellationToken, logger);
+            var serverToClient = ProxyWebSocketMessages(clientWebSocket, webSocket, cancellationToken, logger);
+
+            // Aguardar até que uma das conexões feche
+            await Task.WhenAny(clientToServer, serverToClient);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Erro ao conectar ao routeros.io em {WsUrl} para router {RouterId}", wsUrl, routerId);
+            await SendWebSocketErrorAndClose(webSocket, $"Erro ao conectar ao servidor RouterOS: {ex.Message}", logger);
+        }
+        finally
+        {
+            // Fechar conexão com routeros.io
+            if (clientWebSocket.State == WebSocketState.Open || clientWebSocket.State == WebSocketState.CloseReceived)
+            {
+                try
+                {
+                    await clientWebSocket.CloseAsync(
+                        WebSocketCloseStatus.NormalClosure,
+                        "Connection closed",
+                        CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Erro ao fechar conexão com routeros.io: {Error}", ex.Message);
+                }
+            }
+            clientWebSocket.Dispose();
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Erro no WebSocket proxy para router {RouterId}", routerId);
+    }
+    finally
+    {
+        if (webSocket.State == System.Net.WebSockets.WebSocketState.Open || 
+            webSocket.State == System.Net.WebSockets.WebSocketState.CloseReceived)
+        {
+            await webSocket.CloseAsync(
+                System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                "Connection closed",
+                CancellationToken.None);
+        }
+        logger.LogInformation("WebSocket desconectado para router {RouterId}", routerId);
+    }
+});
+
 // Authorization (opcional para SignalR, mas necessário para APIs)
 app.UseAuthorization();
 
@@ -845,5 +985,84 @@ static string ReplaceEnvironmentVariables(string input)
     }
 
     return result;
+}
+
+/// <summary>
+/// Faz proxy de mensagens entre dois WebSockets
+/// </summary>
+static async Task ProxyWebSocketMessages(WebSocket source, WebSocket destination, CancellationToken cancellationToken, ILogger logger)
+{
+    var buffer = new byte[4096];
+    try
+    {
+        while (source.State == WebSocketState.Open && destination.State == WebSocketState.Open)
+        {
+            var result = await source.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+            
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                if (destination.State == WebSocketState.Open)
+                {
+                    await destination.CloseAsync(
+                        WebSocketCloseStatus.NormalClosure,
+                        "Connection closed by source",
+                        cancellationToken);
+                }
+                break;
+            }
+
+            if (result.MessageType == WebSocketMessageType.Text || result.MessageType == WebSocketMessageType.Binary)
+            {
+                await destination.SendAsync(
+                    new ArraySegment<byte>(buffer, 0, result.Count),
+                    result.MessageType,
+                    result.EndOfMessage,
+                    cancellationToken);
+            }
+        }
+    }
+    catch (WebSocketException ex)
+    {
+        logger.LogWarning(ex, "WebSocket error durante proxy: {Error}", ex.Message);
+    }
+    catch (OperationCanceledException)
+    {
+        logger.LogInformation("Proxy cancelado");
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Erro inesperado durante proxy: {Error}", ex.Message);
+    }
+}
+
+/// <summary>
+/// Envia mensagem de erro e fecha conexão WebSocket
+/// </summary>
+static async Task SendWebSocketErrorAndClose(WebSocket webSocket, string errorMessage, ILogger logger)
+{
+    try
+    {
+        var errorJson = JsonSerializer.Serialize(new { error = errorMessage });
+        var errorBytes = Encoding.UTF8.GetBytes(errorJson);
+        await webSocket.SendAsync(
+            new ArraySegment<byte>(errorBytes),
+            WebSocketMessageType.Text,
+            true,
+            CancellationToken.None);
+    }
+    catch (Exception ex)
+    {
+        logger.LogWarning(ex, "Erro ao enviar mensagem de erro: {Error}", ex.Message);
+    }
+    finally
+    {
+        if (webSocket.State == WebSocketState.Open)
+        {
+            await webSocket.CloseAsync(
+                WebSocketCloseStatus.InternalServerError,
+                errorMessage,
+                CancellationToken.None);
+        }
+    }
 }
 

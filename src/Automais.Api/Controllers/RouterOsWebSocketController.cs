@@ -10,9 +10,10 @@ namespace Automais.Api.Controllers;
 /// <summary>
 /// Controller WebSocket para proxy RouterOS
 /// Faz proxy entre frontend e servidor routeros.io Python
+/// NOTA: Este controller está desabilitado - o endpoint está mapeado diretamente no Program.cs
 /// </summary>
-[ApiController]
-[Route("api/ws/routeros")]
+// [ApiController]
+// [Route("api/ws/routeros")]
 public class RouterOsWebSocketController : ControllerBase
 {
     private readonly IRouterRepository _routerRepository;

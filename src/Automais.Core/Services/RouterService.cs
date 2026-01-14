@@ -1,6 +1,7 @@
 using Automais.Core.DTOs;
 using Automais.Core.Entities;
 using Automais.Core.Interfaces;
+using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
 namespace Automais.Core.Services;
@@ -15,19 +16,22 @@ public class RouterService : IRouterService
     private readonly IRouterAllowedNetworkRepository? _allowedNetworkRepository;
     private readonly IRouterWireGuardService? _wireGuardService;
     private readonly IVpnNetworkRepository? _vpnNetworkRepository;
+    private readonly ILogger<RouterService>? _logger;
 
     public RouterService(
         IRouterRepository routerRepository,
         ITenantRepository tenantRepository,
         IRouterAllowedNetworkRepository? allowedNetworkRepository = null,
         IRouterWireGuardService? wireGuardService = null,
-        IVpnNetworkRepository? vpnNetworkRepository = null)
+        IVpnNetworkRepository? vpnNetworkRepository = null,
+        ILogger<RouterService>? logger = null)
     {
         _routerRepository = routerRepository;
         _tenantRepository = tenantRepository;
         _allowedNetworkRepository = allowedNetworkRepository;
         _wireGuardService = wireGuardService;
         _vpnNetworkRepository = vpnNetworkRepository;
+        _logger = logger;
     }
 
     public async Task<IEnumerable<RouterDto>> GetAllAsync(CancellationToken cancellationToken = default)
@@ -168,6 +172,9 @@ public class RouterService : IRouterService
             throw new KeyNotFoundException($"Router com ID {id} não encontrado.");
         }
 
+        // Log dos dados recebidos para debug
+        _logger?.LogInformation($"📥 Atualizando router {id}: Status={dto.Status}, LastSeenAt={dto.LastSeenAt}, Latency={dto.Latency}, HardwareInfo={(dto.HardwareInfo != null ? "presente" : "null")}, FirmwareVersion={dto.FirmwareVersion}, Model={dto.Model}");
+
         if (!string.IsNullOrWhiteSpace(dto.Name))
         {
             router.Name = dto.Name;
@@ -199,31 +206,37 @@ public class RouterService : IRouterService
         if (dto.Status.HasValue)
         {
             router.Status = dto.Status.Value;
+            _logger?.LogDebug($"✅ Status atualizado para {router.Status}");
         }
 
         if (dto.LastSeenAt.HasValue)
         {
             router.LastSeenAt = dto.LastSeenAt.Value;
+            _logger?.LogDebug($"✅ LastSeenAt atualizado para {router.LastSeenAt}");
         }
 
         if (dto.Latency.HasValue)
         {
             router.Latency = dto.Latency.Value;
+            _logger?.LogDebug($"✅ Latency atualizado para {router.Latency}");
         }
 
         if (dto.HardwareInfo != null)
         {
             router.HardwareInfo = dto.HardwareInfo;
+            _logger?.LogDebug($"✅ HardwareInfo atualizado (tamanho: {dto.HardwareInfo.Length} chars)");
         }
 
         if (dto.FirmwareVersion != null)
         {
             router.FirmwareVersion = dto.FirmwareVersion;
+            _logger?.LogDebug($"✅ FirmwareVersion atualizado para {router.FirmwareVersion}");
         }
 
         if (dto.Model != null)
         {
             router.Model = dto.Model;
+            _logger?.LogDebug($"✅ Model atualizado para {router.Model}");
         }
 
         if (dto.Description != null)

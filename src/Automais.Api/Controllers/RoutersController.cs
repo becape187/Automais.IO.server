@@ -1,6 +1,7 @@
 using Automais.Core.DTOs;
 using Automais.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace Automais.Api.Controllers;
 
@@ -183,7 +184,32 @@ public class RoutersController : ControllerBase
     {
         try
         {
+            // Log detalhado do que foi recebido
+            _logger.LogInformation($"📥 [API] Recebida requisição PUT para atualizar router {id}");
+            _logger.LogInformation($"   Status: {dto.Status}");
+            _logger.LogInformation($"   LastSeenAt: {dto.LastSeenAt}");
+            _logger.LogInformation($"   Latency: {dto.Latency}");
+            _logger.LogInformation($"   HardwareInfo: {(dto.HardwareInfo != null ? $"presente ({dto.HardwareInfo.Length} chars)" : "null")}");
+            _logger.LogInformation($"   FirmwareVersion: {dto.FirmwareVersion}");
+            _logger.LogInformation($"   Model: {dto.Model}");
+            
+            // Log do JSON completo recebido
+            try
+            {
+                var jsonPayload = JsonSerializer.Serialize(dto, new JsonSerializerOptions 
+                { 
+                    WriteIndented = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                });
+                _logger.LogInformation($"   📋 Payload completo recebido (JSON):\n{jsonPayload}");
+            }
+            catch (Exception jsonEx)
+            {
+                _logger.LogWarning(jsonEx, "   ⚠️ Erro ao serializar DTO para log");
+            }
+            
             var updated = await _routerService.UpdateAsync(id, dto, cancellationToken);
+            _logger.LogInformation($"✅ [API] Router {id} atualizado com sucesso");
             return Ok(updated);
         }
         catch (KeyNotFoundException ex)

@@ -173,7 +173,28 @@ public class RouterService : IRouterService
         }
 
         // Log dos dados recebidos para debug
-        _logger?.LogInformation($"📥 Atualizando router {id}: Status={dto.Status}, LastSeenAt={dto.LastSeenAt}, Latency={dto.Latency}, HardwareInfo={(dto.HardwareInfo != null ? "presente" : "null")}, FirmwareVersion={dto.FirmwareVersion}, Model={dto.Model}");
+        _logger?.LogInformation($"📥 [SERVICE] Iniciando atualização do router {id}");
+        _logger?.LogInformation($"   Status: {dto.Status}");
+        _logger?.LogInformation($"   LastSeenAt: {dto.LastSeenAt}");
+        _logger?.LogInformation($"   Latency: {dto.Latency}");
+        _logger?.LogInformation($"   HardwareInfo: {(dto.HardwareInfo != null ? $"presente ({dto.HardwareInfo.Length} chars)" : "null")}");
+        _logger?.LogInformation($"   FirmwareVersion: {dto.FirmwareVersion}");
+        _logger?.LogInformation($"   Model: {dto.Model}");
+        
+        // Log do JSON completo do DTO
+        try
+        {
+            var jsonDto = JsonSerializer.Serialize(dto, new JsonSerializerOptions 
+            { 
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            });
+            _logger?.LogInformation($"   📋 DTO completo recebido (JSON):\n{jsonDto}");
+        }
+        catch (Exception jsonEx)
+        {
+            _logger?.LogWarning(jsonEx, "   ⚠️ Erro ao serializar DTO para log");
+        }
 
         if (!string.IsNullOrWhiteSpace(dto.Name))
         {
@@ -246,7 +267,17 @@ public class RouterService : IRouterService
 
         router.UpdatedAt = DateTime.UtcNow;
 
+        // Log do estado final antes de salvar
+        _logger?.LogInformation($"💾 [SERVICE] Salvando router {id} no banco:");
+        _logger?.LogInformation($"   Status final: {router.Status}");
+        _logger?.LogInformation($"   LastSeenAt final: {router.LastSeenAt}");
+        _logger?.LogInformation($"   Latency final: {router.Latency}");
+        _logger?.LogInformation($"   HardwareInfo final: {(router.HardwareInfo != null ? $"presente ({router.HardwareInfo.Length} chars)" : "null")}");
+        _logger?.LogInformation($"   FirmwareVersion final: {router.FirmwareVersion}");
+        _logger?.LogInformation($"   Model final: {router.Model}");
+
         var updated = await _routerRepository.UpdateAsync(router, cancellationToken);
+        _logger?.LogInformation($"✅ [SERVICE] Router {id} salvo no banco com sucesso");
         return await MapToDtoAsync(updated, cancellationToken);
     }
 

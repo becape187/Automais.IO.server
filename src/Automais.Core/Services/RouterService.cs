@@ -201,6 +201,31 @@ public class RouterService : IRouterService
             router.Status = dto.Status.Value;
         }
 
+        if (dto.LastSeenAt.HasValue)
+        {
+            router.LastSeenAt = dto.LastSeenAt.Value;
+        }
+
+        if (dto.Latency.HasValue)
+        {
+            router.Latency = dto.Latency.Value;
+        }
+
+        if (dto.HardwareInfo != null)
+        {
+            router.HardwareInfo = dto.HardwareInfo;
+        }
+
+        if (dto.FirmwareVersion != null)
+        {
+            router.FirmwareVersion = dto.FirmwareVersion;
+        }
+
+        if (dto.Model != null)
+        {
+            router.Model = dto.Model;
+        }
+
         if (dto.Description != null)
         {
             router.Description = dto.Description;

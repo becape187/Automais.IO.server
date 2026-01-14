@@ -97,6 +97,11 @@ public class UpdateRouterDto
     public string? RouterOsApiPassword { get; set; }
     public Guid? VpnNetworkId { get; set; }
     public RouterStatus? Status { get; set; }
+    public DateTime? LastSeenAt { get; set; }
+    public int? Latency { get; set; }
+    public string? HardwareInfo { get; set; }
+    public string? FirmwareVersion { get; set; }
+    public string? Model { get; set; }
     public string? Description { get; set; }
 }
 
